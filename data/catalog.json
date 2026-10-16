@@ -1,0 +1,15 @@
+{
+  "categories": [
+    { "id": "phones", "title": "Смартфоны" },
+    { "id": "audio", "title": "Наушники" },
+    { "id": "accessories", "title": "Аксессуары" }
+  ],
+  "products": [
+    { "id": "p1", "category": "phones", "title": "Смартфон Nova X", "price": 24990, "description": "6.5\" AMOLED, 128 ГБ, камера 50 Мп, NFC" },
+    { "id": "p2", "category": "phones", "title": "Смартфон Nova Lite", "price": 14990, "description": "6.1\", 64 ГБ, аккумулятор 5000 мАч" },
+    { "id": "a1", "category": "audio", "title": "Наушники AirBeat", "price": 5990, "description": "Беспроводные TWS, шумоподавление, до 30 ч работы" },
+    { "id": "a2", "category": "audio", "title": "Колонка BoomMini", "price": 3490, "description": "Bluetooth 5.3, защита IPX7, 12 ч работы" },
+    { "id": "c1", "category": "accessories", "title": "Зарядка 65W GaN", "price": 2490, "description": "USB-C + USB-A, быстрая зарядка PD 3.0" },
+    { "id": "c2", "category": "accessories", "title": "Чехол силиконовый", "price": 790, "description": "Для Nova X / Nova Lite, 5 цветов" }
+  ]
+}
