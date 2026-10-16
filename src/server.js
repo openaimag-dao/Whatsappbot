@@ -11,7 +11,7 @@ const catalog = loadCatalog(config.catalogPath);
 const store = new Store(config.dbPath);
 const wa = new WhatsAppClient(config.whatsapp);
 const assistant = config.ai.apiKey
-  ? new SalesAssistant({ apiKey: config.ai.apiKey, model: config.ai.model, shop: config.shop, catalog })
+  ? new SalesAssistant({ ...config.ai, shop: config.shop, catalog, shopInfoPath: config.shopInfoPath })
   : null;
 const bot = new SalesBot({ wa, store, catalog, shop: config.shop, assistant });
 
@@ -64,7 +64,7 @@ app.get('/orders', (req, res) => {
 });
 
 app.listen(config.port, () => {
-  console.log(`Бот «${config.shop.name}» слушает порт ${config.port}. AI-консультант: ${assistant ? 'включён' : 'выключен'}`);
+  console.log(`Бот «${config.shop.name}» (${catalog.size} товаров) слушает порт ${config.port}. AI-консультант: ${assistant ? 'включён' : 'выключен'}`);
   if (!config.whatsapp.token || !config.whatsapp.phoneNumberId) {
     console.warn('⚠️  Не заданы WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID — отправка сообщений работать не будет.');
   }
