@@ -210,7 +210,7 @@ export async function renderKP(kp, company) {
   // Подпись
   doc.font('R').fontSize(9.5).fillColor(INK).text('Руководитель', L, y + 48);
   doc.moveTo(L + 110, y + 60).lineTo(L + 280, y + 60).lineWidth(0.8).stroke(INK);
-  stamp(doc, company, L + 120, y, 140);
+  stamp(doc, company, L + 110, y - 12, 140);
   doc.text(company.director, L + 295, y + 48);
   y += 125;
 
@@ -308,7 +308,7 @@ export async function renderInvoice(inv, company) {
 
   doc.font('B').fontSize(9.5).text('Руководитель', L, y + 34);
   doc.moveTo(L + 100, y + 46).lineTo(L + 310, y + 46).lineWidth(0.8).stroke(INK);
-  stamp(doc, company, L + 125, y, 150);
+  stamp(doc, company, L + 115, y - 14, 150);
   doc.font('R').text(company.director, L + 325, y + 34);
   doc.fontSize(8.5).text('М.П.', L + 300, y + 110);
 
