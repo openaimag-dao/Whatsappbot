@@ -5,6 +5,7 @@ import { Store } from './store.js';
 import { WhatsAppClient } from './whatsapp.js';
 import { SalesAssistant } from './ai.js';
 import { SalesBot } from './bot.js';
+import { EktClient } from './ekt.js';
 import { extractMessages, isValidSignature } from './webhook.js';
 
 const catalog = loadCatalog(config.catalogPath);
@@ -13,7 +14,8 @@ const wa = new WhatsAppClient(config.whatsapp);
 const assistant = config.ai.apiKey
   ? new SalesAssistant({ ...config.ai, shop: config.shop, catalog, shopInfoPath: config.shopInfoPath })
   : null;
-const bot = new SalesBot({ wa, store, catalog, shop: config.shop, assistant });
+const ekt = new EktClient({ ...config.firecrawl, pricing: config.pricing });
+const bot = new SalesBot({ wa, store, catalog, shop: config.shop, assistant, ekt, company: config.company });
 
 // Meta может доставить одно сообщение повторно — отбрасываем дубли.
 const seen = new Set();
@@ -64,7 +66,7 @@ app.get('/orders', (req, res) => {
 });
 
 app.listen(config.port, () => {
-  console.log(`Бот «${config.shop.name}» (${catalog.size} товаров) слушает порт ${config.port}. AI-консультант: ${assistant ? 'включён' : 'выключен'}`);
+  console.log(`Бот «${config.shop.name}» (${catalog.size} товаров) слушает порт ${config.port}. AI-консультант: ${assistant ? 'включён' : 'выключен'}. Поиск на ekt.kz: ${ekt.enabled ? 'включён' : 'выключен (нет FIRECRAWL_API_KEY)'}`);
   if (!config.whatsapp.token || !config.whatsapp.phoneNumberId) {
     console.warn('⚠️  Не заданы WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID — отправка сообщений работать не будет.');
   }

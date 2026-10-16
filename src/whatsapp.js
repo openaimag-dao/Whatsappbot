@@ -67,6 +67,27 @@ export class WhatsAppClient {
     });
   }
 
+  // Загрузка файла в Cloud API → media id.
+  async upload(buffer, filename, mime = 'application/pdf') {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', mime);
+    form.append('file', new Blob([buffer], { type: mime }), filename);
+    const res = await fetch(this.url.replace(/\/messages$/, '/media'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.token}` },
+      body: form,
+    });
+    if (!res.ok) throw new Error(`WhatsApp media ${res.status}: ${await res.text()}`);
+    return (await res.json()).id;
+  }
+
+  // Отправка PDF (КП, счёт) документом.
+  async document(to, buffer, filename, caption = '') {
+    const id = await this.upload(buffer, filename);
+    return this.#send(to, { type: 'document', document: { id, filename, ...(caption ? { caption: cut(caption, 1024) } : {}) } });
+  }
+
   markRead(messageId) {
     return this.#post({ messaging_product: 'whatsapp', status: 'read', message_id: messageId }).catch(() => {});
   }
