@@ -6,6 +6,7 @@ import { WhatsAppClient } from './channels/whatsapp.js';
 import { SimulatorChannel } from './channels/simulator.js';
 import { SalesAssistant } from './ai.js';
 import { SalesBot } from './bot.js';
+import { EktClient } from './ekt.js';
 import { extractMessages, isValidSignature } from './webhook.js';
 
 // Сборка приложения: общие каталог/хранилище/AI и по боту на каждый канал.
@@ -19,20 +20,16 @@ export function createApp(config = defaultConfig, deps = {}) {
         ? new SalesAssistant({ ...config.ai, shop: config.shop, catalog, shopInfoPath: config.shopInfoPath })
         : null;
 
+  const ekt = deps.ekt !== undefined ? deps.ekt : new EktClient({ ...config.firecrawl, pricing: config.pricing });
+  const common = { store, catalog, assistant, ekt, company: config.company, ...(deps.botOptions ?? {}) };
+
   const wa = deps.whatsapp ?? new WhatsAppClient(config.whatsapp);
-  const bot = new SalesBot({ channel: wa, store, catalog, shop: config.shop, assistant });
+  const bot = new SalesBot({ ...common, channel: wa, shop: config.shop });
 
   // Эмулятор: уведомления «менеджеру» остаются внутри эмулятора, а не уходят в WhatsApp.
   const SIM_MANAGER = 'sim-manager';
   const sim = new SimulatorChannel();
-  const simBot = new SalesBot({
-    channel: sim,
-    store,
-    catalog,
-    shop: { ...config.shop, managerPhone: SIM_MANAGER },
-    assistant,
-    source: 'simulator',
-  });
+  const simBot = new SalesBot({ ...common, channel: sim, shop: { ...config.shop, managerPhone: SIM_MANAGER }, source: 'simulator' });
 
   // Meta может доставить одно сообщение повторно — отбрасываем дубли.
   const seen = new Set();
@@ -99,18 +96,28 @@ export function createApp(config = defaultConfig, deps = {}) {
       return id ? `sim-${id}` : null;
     };
 
+    // as: 'client' — пишет клиент; 'manager' — пишет менеджер (например, «ок 1023» для подтверждения КП).
     app.post('/simulator/api/message', requireAdmin, async (req, res) => {
       const user = simUser(req);
       if (!user) return res.status(400).json({ error: 'user required' });
-      const { text, replyId, name } = req.body;
+      const { text, replyId, name, as } = req.body;
+      const from = as === 'manager' ? SIM_MANAGER : user;
       try {
-        await enqueue(user, () =>
-          simBot.handle({ from: user, name: name ? String(name).slice(0, 60) : undefined, text, replyId }),
+        await enqueue(from, () =>
+          simBot.handle({ from, name: name ? String(name).slice(0, 60) : undefined, text, replyId }),
         );
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
       res.json({ messages: sim.drain(user), manager: sim.drain(SIM_MANAGER) });
+    });
+
+    app.get('/simulator/files/:id', requireAdmin, (req, res) => {
+      const file = sim.file(req.params.id);
+      if (!file) return res.sendStatus(404);
+      res.type('application/pdf');
+      res.set('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+      res.send(file.buffer);
     });
 
     app.post('/simulator/api/reset', requireAdmin, (req, res) => {
@@ -126,5 +133,5 @@ export function createApp(config = defaultConfig, deps = {}) {
     res.json(store.data.orders),
   );
 
-  return { app, bot, simBot, store, catalog, assistant };
+  return { app, bot, simBot, sim, store, catalog, assistant, ekt };
 }

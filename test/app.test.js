@@ -10,6 +10,7 @@ function config(overrides = {}) {
     whatsapp: { token: 't', phoneNumberId: '1', verifyToken: 'verify', appSecret: 'secret', apiVersion: 'v23.0' },
     shop: { name: 'AIMAG ELECTRIC', currency: '₸', phone: '+7', hours: 'Пн–Пт', managerPhone: '77000000000' },
     ai: { apiKey: '' },
+    company: { name: 'ИП «AIMAG»', iin: '890922301639', director: 'Оразбаев Е. О.', address: 'Шымкент', phone: '+7', bank: 'Банк', bik: 'BIK', iik: 'KZ00', knp: '710', stampPath: '/nonexistent.png' },
     adminToken: '',
     simulatorEnabled: true,
     catalogPath: new URL('../data/catalog.json', import.meta.url).pathname,
@@ -26,7 +27,7 @@ async function start(cfg, deps = {}) {
     list: async (to, body, _b, rows) => sent.push({ to, type: 'list', body, rows }),
     markRead: () => {},
   };
-  const ctx = createApp(cfg, { store: new Store(null), whatsapp, assistant: null, ...deps });
+  const ctx = createApp(cfg, { store: new Store(null), whatsapp, assistant: null, ekt: null, ...deps });
   const server = ctx.app.listen(0);
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -53,9 +54,14 @@ test('эмулятор: диалог и заявка, уведомление м�
   await say({ replyId: 'no_comment' });
   r = await say({ replyId: 'confirm_order' });
 
-  assert.match(r.messages[0].body, /Заявка/);
-  assert.match(r.manager[0].body, /Заявка на КП/);
-  assert.equal(s.store.data.orders[0].source, 'simulator');
+  assert.ok(r.messages.some((m) => /Заявка|КП/.test(m.body ?? m.caption)));
+  assert.ok(r.manager.length > 0, 'менеджер получил уведомление в эмуляторе');
+  assert.equal(s.store.data.orders[0].channel, 'simulator');
+  const doc = [...r.messages, ...r.manager].find((m) => m.type === 'document');
+  assert.ok(doc, 'КП приходит PDF-документом');
+  const pdf = await fetch(`${s.base}/simulator/files/${doc.fileId}`);
+  assert.equal(pdf.headers.get('content-type'), 'application/pdf');
+  assert.equal((await pdf.arrayBuffer()).byteLength, doc.size);
   assert.equal(s.sent.length, 0, 'в настоящий WhatsApp ничего не отправлено');
 });
 

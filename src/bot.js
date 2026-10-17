@@ -1,4 +1,7 @@
+import crypto from 'node:crypto';
 import { formatPrice } from './catalog.js';
+import { renderInvoice, renderKP, totals } from './documents.js';
+import { money, round2, VAT_RATE } from './money.js';
 
 const MENU_WORDS = ['меню', 'menu', 'start', 'старт', 'привет', 'здравствуйте', 'сәлем', 'салем', 'hi', 'hello', '/start'];
 const MAX_HISTORY = 12;
@@ -6,14 +9,28 @@ const PAGE = 9; // 10-я строка списка WhatsApp — «Ещё ▶»
 
 // Логика диалога. Не зависит от HTTP — принимает входящее сообщение и шлёт ответы через канал (WhatsApp, эмулятор…).
 export class SalesBot {
-  constructor({ channel, store, catalog, shop, assistant = null, source = 'whatsapp', logger = console }) {
+  constructor({ channel, store, catalog, shop, assistant = null, ekt = null, company = null, docs = { renderKP, renderInvoice }, source = 'whatsapp', now = () => new Date(), logger = console }) {
     this.channel = channel;
     this.source = source;
+    this.ekt = ekt;
+    this.company = company;
+    this.docs = docs;
+    this.now = now;
     this.store = store;
     this.catalog = catalog;
     this.shop = shop;
     this.assistant = assistant;
     this.log = logger;
+  }
+
+  // Товар из каталога aimag.kz или найденный на ekt.kz
+  product(id) {
+    return this.catalog.products.get(id) || this.store.external(id);
+  }
+
+  // Цена за единицу с НДС для КП и счёта
+  priceVat(p) {
+    return p.priceVat ?? round2(p.price * (1 + VAT_RATE));
   }
 
   price(p) {
@@ -36,6 +53,12 @@ export class SalesBot {
     const text = (msg.text || '').trim();
     const lower = text.toLowerCase();
     const id = msg.replyId || '';
+
+    // Менеджер подтверждает КП, ожидающее проверки: «ок 1023»
+    if (from === this.shop.managerPhone) {
+      const m = lower.match(/^(?:ок|ok|да|отправ\S*)\s*№?\s*(\d{3,})/);
+      if (m) return this.approveOrder(from, Number(m[1]));
+    }
 
     // Клиент общается с менеджером — бот молчит, пока не попросят меню.
     if (s.state === 'manager' && !MENU_WORDS.includes(lower) && id !== 'menu') return;
@@ -65,6 +88,8 @@ export class SalesBot {
         { id: 'menu', title: 'Меню' },
       ]);
     }
+    if (id.startsWith('agree:')) return this.askBuyer(from, s, Number(id.slice(6)));
+    if (s.state === 'invoice_buyer' && text) return this.sendInvoice(from, s, text);
     if (id.startsWith('cats:')) return this.showCategories(from, s, Number(id.slice(5)) || 0);
     if (id.startsWith('cat:')) {
       const [, cat, offset] = id.split(':');
@@ -156,16 +181,18 @@ export class SalesBot {
   }
 
   showFound(to, s, offset) {
-    const items = (s.lastSearch?.ids ?? []).map((id) => this.catalog.products.get(id)).filter(Boolean);
+    const items = (s.lastSearch?.ids ?? []).map((id) => this.product(id)).filter(Boolean);
     if (!items.length) return this.channel.text(to, 'Напишите, что ищете, — я найду в каталоге.');
-    const head = s.lastSearch.exact
+    const head = s.lastSearch.source === 'ekt'
+      ? `В нашем каталоге «${s.lastSearch.query}» нет, но есть у партнёра-поставщика (${items.length}). Цены ниже рыночных:`
+      : s.lastSearch.exact
       ? `🔎 По запросу «${s.lastSearch.query}» найдено: ${items.length}`
       : `Точного совпадения по «${s.lastSearch.query}» нет. Похожие позиции (${items.length}):`;
     return this.channel.list(to, head, 'Результаты', this.#paged(items.map((p) => this.productRow(p)), offset, (o) => `found:${o}`));
   }
 
   showProduct(to, s, productId) {
-    const p = this.catalog.products.get(productId);
+    const p = this.product(productId);
     if (!p) return this.channel.text(to, 'Товар не найден. Напишите «меню».');
     const lines = [
       `*${p.title}*`,
@@ -176,17 +203,17 @@ export class SalesBot {
       p.price > 0 ? `Цена: *${this.price(p)}* (без НДС)` : 'Цена: по запросу',
       p.inStock ? '✅ В наличии' : '🕒 Под заказ',
       p.unit === 'м' ? 'Режем по метражу. От 100 м — цена ниже, пришлём в КП.' : null,
-      p.url ? `\n${p.url}` : null,
+      p.url && p.source !== 'ekt' ? `\n${p.url}` : null,
     ];
     return this.channel.buttons(to, lines.filter((l) => l !== null).join('\n'), [
       { id: `add:${p.id}`, title: '➕ В заявку' },
-      { id: `cat:${p.category}:0`, title: '⬅️ К разделу' },
+      p.category ? { id: `cat:${p.category}:0`, title: '⬅️ К разделу' } : { id: 'found:0', title: '⬅️ К результатам' },
       { id: 'cart', title: '📝 Заявка' },
     ]);
   }
 
   askQuantity(to, s, productId) {
-    const p = this.catalog.products.get(productId);
+    const p = this.product(productId);
     if (!p) return this.channel.text(to, 'Товар не найден.');
     s.state = 'qty';
     s.pendingProduct = p.id;
@@ -194,7 +221,7 @@ export class SalesBot {
   }
 
   addToCart(to, s, text) {
-    const p = this.catalog.products.get(s.pendingProduct);
+    const p = this.product(s.pendingProduct);
     const qty = Number(text.replace(',', '.').match(/\d+(\.\d+)?/)?.[0]);
     if (!p) {
       s.state = 'idle';
@@ -219,7 +246,7 @@ export class SalesBot {
 
   cartItems(s) {
     return Object.entries(s.cart)
-      .map(([id, qty]) => ({ product: this.catalog.products.get(id), qty }))
+      .map(([id, qty]) => ({ product: this.product(id), qty }))
       .filter((i) => i.product && i.qty > 0);
   }
 
@@ -277,7 +304,7 @@ export class SalesBot {
   async confirmOrder(to, s) {
     if (s.state !== 'checkout_confirm' || !this.cartItems(s).length) return this.mainMenu(to, s);
     const order = this.store.createOrder({
-      source: this.source,
+      channel: this.source,
       phone: to,
       name: s.checkout.name,
       city: s.checkout.city,
@@ -287,9 +314,13 @@ export class SalesBot {
         sku: i.product.sku,
         title: i.product.title,
         price: i.product.price,
+        priceVat: i.product.price > 0 ? this.priceVat(i.product) : 0,
         unit: i.product.unit,
         qty: i.qty,
+        inStock: Boolean(i.product.inStock),
+        source: i.product.source || 'catalog',
         url: i.product.url,
+        ...(i.product.quote ? { quote: i.product.quote } : {}),
       })),
       total: this.cartTotal(s),
       status: 'new',
@@ -298,13 +329,133 @@ export class SalesBot {
     s.cart = {};
     s.checkout = {};
     s.state = 'idle';
+    const contact = `👤 ${order.name}\n📍 ${order.city}\n📞 +${to}${order.comment ? `\n💬 ${order.comment}` : ''}`;
+    const priced = order.items.filter((i) => i.priceVat > 0);
+    const risky = order.items.filter((i) => i.quote?.needsApproval);
+
+    // Нечего считать автоматически (или нет реквизитов для документов) — как раньше, через менеджера.
+    if (!priced.length || !this.company) {
+      await this.channel.text(
+        to,
+        `🎉 Заявка *№${order.number}* принята!\nМенеджер проверит наличие и пришлёт коммерческое предложение в рабочее время (${this.shop.hours}).\n\nСрочно? Звоните: ${this.shop.phone}`,
+      );
+      return this.notifyManager(`🆕 Заявка на КП №${order.number}\n\n${summary}\n\n${contact}`);
+    }
+
+    // Прибыль по ценам ekt.kz ниже минимума — КП уходит только после подтверждения менеджера.
+    if (risky.length) {
+      order.status = 'awaiting_approval';
+      await this.channel.text(
+        to,
+        `🎉 Заявка *№${order.number}* принята! Проверяем цены и наличие — коммерческое предложение пришлём в течение рабочего дня (${this.shop.hours}).`,
+      );
+      const lines = risky.map((i) => `• ${i.title}: ${money(i.priceVat)} ₸ с НДС, прибыль ${Math.round(i.quote.margin * 100)}%`).join('\n');
+      return this.notifyManager(
+        `🆕 Заявка на КП №${order.number} ждёт проверки\n\n${summary}\n\n${contact}\n\n⚠️ Прибыль ниже минимума:\n${lines}\n\nОтветьте «ок ${order.number}», чтобы отправить КП клиенту.`,
+      );
+    }
+
+    await this.notifyManager(`🆕 Заявка на КП №${order.number}\n\n${summary}\n\n${contact}\n\nКП отправлено клиенту автоматически.`);
+    return this.sendKP(order);
+  }
+
+  // Строки документа из позиций заявки (только с ценой).
+  docLines(order) {
+    return order.items
+      .filter((i) => i.priceVat > 0)
+      .map((i) => ({
+        title: i.title,
+        code: i.sku || '',
+        qty: i.qty,
+        unit: i.unit,
+        priceVat: i.priceVat,
+        status: i.inStock ? 'stock' : 'order',
+        leadTime: i.inStock ? '' : 'срок уточним',
+      }));
+  }
+
+  async sendKP(order) {
+    const date = this.now();
+    const { mmdd, nn } = this.store.next('kp', date);
+    const number = `КП-${mmdd}-${nn}`;
+    const lines = this.docLines(order);
+    const pending = order.items.filter((i) => !(i.priceVat > 0)).map((i) => `${i.title} — ${i.qty} ${i.unit}`);
+    const pdf = await this.docs.renderKP(
+      {
+        number,
+        date,
+        validUntil: new Date(date.getTime() + 7 * 24 * 3600 * 1000),
+        buyer: { name: order.name, address: order.city, phone: `+${order.phone}` },
+        lines,
+        pending,
+      },
+      this.company,
+    );
+    const { total } = totals(lines);
+    order.kp = { number, date: date.toISOString(), total };
+    order.status = 'kp_sent';
+    const file = `${number}.pdf`;
+    await this.channel.document(order.phone, pdf, file, `Коммерческое предложение ${number} по заявке №${order.number}`);
+    await this.channel.buttons(
+      order.phone,
+      `📄 Коммерческое предложение *${number}* на сумму *${money(total)} ₸* (с НДС ${Math.round(VAT_RATE * 100)}%). Действует 7 дней.` +
+        (pending.length ? `\n\nПо позициям без цены (${pending.length}) уточняем у поставщиков и дополним сегодня.` : '') +
+        '\n\nВсё устраивает? Нажмите «Согласен» — пришлём счёт на оплату.',
+      [
+        { id: `agree:${order.number}`, title: '✅ Согласен' },
+        { id: 'manager', title: '👤 Менеджер' },
+      ],
+    );
+    await this.notifyManagerDoc(pdf, file, `${number} → +${order.phone} (заявка №${order.number})`);
+  }
+
+  async approveOrder(to, number) {
+    const order = this.store.order(number);
+    if (!order) return this.channel.text(to, `Заявка №${number} не найдена.`);
+    if (order.status !== 'awaiting_approval') return this.channel.text(to, `Заявка №${number}: статус «${order.status}», подтверждение не требуется.`);
+    await this.sendKP(order);
+    return this.channel.text(to, `✅ КП по заявке №${number} отправлено клиенту.`);
+  }
+
+  askBuyer(to, s, number) {
+    const order = this.store.order(number);
+    if (!order || order.phone !== to || !order.kp) return this.channel.text(to, 'Не нашёл это предложение. Напишите «менеджер» — поможем.');
+    s.state = 'invoice_buyer';
+    s.invoiceOrder = number;
+    return this.channel.text(
+      to,
+      '🧾 Отлично! Для счёта пришлите реквизиты покупателя одним сообщением:\n*БИН/ИИН, название, адрес*\n\nНапример: «060340007296, ТОО «Энерго», г. Актобе, ул. Бурабай, 139Б».\nЕсли покупаете как физлицо — напишите ФИО и ИИН.',
+    );
+  }
+
+  async sendInvoice(to, s, text) {
+    const order = this.store.order(s.invoiceOrder);
+    s.state = 'idle';
+    if (!order) return this.mainMenu(to, s);
+    const bin = text.match(/(?<!\d)\d{12}(?!\d)/)?.[0];
+    const rest = text
+      .replace(bin || '\u0000', '')
+      .replace(/(^|[\s,;])(БИН|ИИН)(?=[\s:№,]|$)[:\s№]*/gi, '$1')
+      .replace(/^[\s,;:.-]+|[\s,;:-]+$/g, '')
+      .replace(/\s*,\s*(,\s*)+/g, ', ')
+      .slice(0, 300);
+    const buyer = { bin, text: bin ? `БИН ${bin}, ${rest}` : rest };
+    const date = this.now();
+    const { mmdd, nn } = this.store.next('invoice', date);
+    const number = `${mmdd}-${nn}`;
+    const lines = this.docLines(order);
+    const pdf = await this.docs.renderInvoice({ number, date, buyer, lines }, this.company);
+    const { total } = totals(lines);
+    order.buyer = buyer;
+    order.invoice = { number, date: date.toISOString(), total };
+    order.status = 'invoice_sent';
+    const file = `Счет_${number}.pdf`;
+    await this.channel.document(to, pdf, file, `Счёт на оплату № ${number}`);
     await this.channel.text(
       to,
-      `🎉 Заявка *№${order.number}* принята!\nМенеджер проверит наличие и пришлёт коммерческое предложение в рабочее время (${this.shop.hours}).\n\nСрочно? Звоните: ${this.shop.phone}`,
+      `🧾 Счёт № ${number} на ${money(total)} ₸ отправлен.\nПри оплате укажите номер и дату счёта. После оплаты пришлите, пожалуйста, платёжку в этот чат — сразу запустим отгрузку.`,
     );
-    await this.notifyManager(
-      `🆕 Заявка на КП №${order.number}\n\n${summary}\n\n👤 ${order.name}\n📍 ${order.city}\n📞 +${to}${order.comment ? `\n💬 ${order.comment}` : ''}`,
-    );
+    await this.notifyManagerDoc(pdf, file, `Счёт ${number} → ${buyer.text} (+${to}), заявка №${order.number}`);
   }
 
   async callManager(to, s) {
@@ -315,6 +466,15 @@ export class SalesBot {
         `Можно сразу прислать спецификацию (Excel/PDF) или список позиций.\nТелефон: ${this.shop.phone}\n\nЧтобы вернуться к боту, напишите «меню».`,
     );
     await this.notifyManager(`📞 Клиент +${to}${s.profileName ? ` (${s.profileName})` : ''} просит связаться с менеджером.`);
+  }
+
+  async notifyManagerDoc(pdf, filename, caption) {
+    if (!this.shop.managerPhone) return;
+    try {
+      await this.channel.document(this.shop.managerPhone, pdf, filename, caption);
+    } catch (err) {
+      this.log.error('Не удалось отправить документ менеджеру:', err.message);
+    }
   }
 
   async notifyManager(text) {
@@ -328,8 +488,15 @@ export class SalesBot {
 
   // Свободный текст: поиск по каталогу + (если включён) ответ AI-консультанта.
   async freeText(to, s, text) {
-    const { items, exact } = this.catalog.search(text, 40);
-    if (items.length) s.lastSearch = { query: text.slice(0, 60), ids: items.map((p) => p.id), exact };
+    let { items, exact } = this.catalog.search(text, 40);
+    let source = 'catalog';
+    // Нет в каталоге — ищем на ekt.kz (цена −5%).
+    if (!items.length && this.ekt?.enabled) {
+      items = (await this.ekt.search(text)).map((it) => this.saveEkt(it));
+      exact = true;
+      source = 'ekt';
+    }
+    if (items.length) s.lastSearch = { query: text.slice(0, 60), ids: items.map((p) => p.id), exact, source };
 
     if (this.assistant) {
       const answered = await this.#askAssistant(to, s, text, items);
@@ -347,6 +514,25 @@ export class SalesBot {
         { id: 'catalog', title: '📦 Каталог' },
       ],
     );
+  }
+
+  saveEkt(it) {
+    const id = `ekt-${crypto.createHash('sha1').update(it.url).digest('hex').slice(0, 10)}`;
+    return this.store.external(id, {
+      id,
+      source: 'ekt',
+      title: it.title,
+      sku: '',
+      unit: it.unit,
+      price: it.quote.price,
+      priceVat: it.quote.priceVat,
+      inStock: true,
+      url: it.url,
+      params: [],
+      quote: it.quote,
+      supplierCode: it.code,
+      sitePrice: it.price,
+    });
   }
 
   async #askAssistant(to, s, text, found) {
