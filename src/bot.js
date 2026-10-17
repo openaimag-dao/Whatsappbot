@@ -2,15 +2,26 @@ import crypto from 'node:crypto';
 import { formatPrice } from './catalog.js';
 import { renderInvoice, renderKP, totals } from './documents.js';
 import { money, round2, VAT_RATE } from './money.js';
+import { convertQty, excelToText } from './spec.js';
 
 const MENU_WORDS = ['меню', 'menu', 'start', 'старт', 'привет', 'здравствуйте', 'сәлем', 'салем', 'hi', 'hello', '/start'];
 const MAX_HISTORY = 12;
 const PAGE = 9; // 10-я строка списка WhatsApp — «Ещё ▶»
+const MAX_SPEC_FILES = 10;
+const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // Логика диалога. Не зависит от HTTP — принимает входящее сообщение и шлёт ответы через канал (WhatsApp, эмулятор…).
 export class SalesBot {
-  constructor({ channel, store, catalog, shop, assistant = null, ekt = null, company = null, docs = { renderKP, renderInvoice }, source = 'whatsapp', now = () => new Date(), logger = console }) {
+  constructor({
+    channel, store, catalog, shop, assistant = null, ekt = null, company = null, docs = { renderKP, renderInvoice },
+    spec = null, specBatchMs = 0, defer = (_key, fn) => fn(), source = 'whatsapp', now = () => new Date(), logger = console,
+  }) {
     this.channel = channel;
+    this.spec = spec;
+    // Клиент часто шлёт спецификацию несколькими фото подряд — ждём паузу и разбираем всё вместе.
+    this.specBatchMs = specBatchMs;
+    this.defer = defer;
+    this.specTimers = new Map();
     this.source = source;
     this.ekt = ekt;
     this.company = company;
@@ -63,6 +74,10 @@ export class SalesBot {
     // Клиент общается с менеджером — бот молчит, пока не попросят меню.
     if (s.state === 'manager' && !MENU_WORDS.includes(lower) && id !== 'menu') return;
 
+    // Фото, PDF или Excel — спецификация
+    if (msg.media?.length) return this.receiveSpec(from, s, msg);
+    if (msg.specReady) return this.processSpec(from, s);
+
     if (id === 'menu' || MENU_WORDS.includes(lower)) return this.mainMenu(from, s);
     if (id === 'catalog' || lower === 'каталог') return this.showCategories(from, s, 0);
     if (id === 'cart' || ['корзина', 'заявка'].includes(lower)) return this.showCart(from, s);
@@ -73,6 +88,7 @@ export class SalesBot {
     }
     if (id === 'cart_clear') {
       s.cart = {};
+      s.cartNotes = {};
       s.state = 'idle';
       return this.channel.buttons(from, 'Заявка очищена.', [
         { id: 'catalog', title: 'Каталог' },
@@ -258,7 +274,8 @@ export class SalesBot {
     const items = this.cartItems(s);
     const lines = items.map((i, n) => {
       const sum = i.product.price > 0 ? ` = ${formatPrice(i.product.price * i.qty, this.shop.currency)}` : ' (цена по запросу)';
-      return `${n + 1}. ${i.product.title}${i.product.sku ? ` [${i.product.sku}]` : ''} — ${i.qty} ${i.product.unit}${sum}`;
+      const note = s.cartNotes?.[i.product.id] ? ` (${s.cartNotes[i.product.id]})` : '';
+      return `${n + 1}. ${i.product.title}${i.product.sku ? ` [${i.product.sku}]` : ''} — ${i.qty} ${i.product.unit}${sum}${note}`;
     });
     const unpriced = items.some((i) => !(i.product.price > 0));
     return (
@@ -275,7 +292,7 @@ export class SalesBot {
         { id: 'search', title: '🔎 Поиск' },
       ]);
     }
-    await this.channel.buttons(to, `📝 *Заявка на КП:*\n${this.cartText(s)}`, [
+    await this.buttonsLong(to, `📝 *Заявка на КП:*\n${this.cartText(s)}`, [
       { id: 'checkout', title: 'Отправить заявку' },
       { id: 'search', title: '🔎 Добавить ещё' },
       { id: 'cart_clear', title: 'Очистить' },
@@ -291,13 +308,14 @@ export class SalesBot {
 
   showOrderSummary(to, s) {
     const c = s.checkout;
-    return this.channel.buttons(
+    return this.buttonsLong(
       to,
       `Проверьте заявку:\n\n${this.cartText(s)}\n\n👤 ${c.name}\n📍 ${c.city}\n📞 +${to}${c.comment ? `\n💬 ${c.comment}` : ''}`,
       [
         { id: 'confirm_order', title: '✅ Отправить' },
         { id: 'cancel_order', title: '❌ Отмена' },
       ],
+      'Всё верно? Отправляем заявку?',
     );
   }
 
@@ -321,12 +339,14 @@ export class SalesBot {
         source: i.product.source || 'catalog',
         url: i.product.url,
         ...(i.product.quote ? { quote: i.product.quote } : {}),
+        ...(s.cartNotes?.[i.product.id] ? { note: s.cartNotes[i.product.id] } : {}),
       })),
       total: this.cartTotal(s),
       status: 'new',
     });
     const summary = this.cartText(s);
     s.cart = {};
+    s.cartNotes = {};
     s.checkout = {};
     s.state = 'idle';
     const contact = `👤 ${order.name}\n📍 ${order.city}\n📞 +${to}${order.comment ? `\n💬 ${order.comment}` : ''}`;
@@ -484,6 +504,168 @@ export class SalesBot {
     } catch (err) {
       this.log.error('Не удалось уведомить менеджера:', err.message);
     }
+  }
+
+  // Кнопки WhatsApp допускают до 1024 символов текста — длинный текст уходит отдельным сообщением.
+  async buttonsLong(to, text, buttons, short = 'Выберите действие:') {
+    if (text.length <= 1024) return this.channel.buttons(to, text, buttons);
+    await this.channel.text(to, text);
+    return this.channel.buttons(to, short, buttons);
+  }
+
+  // --- Спецификации: фото / PDF / Excel ---
+
+  async receiveSpec(to, s, msg) {
+    s.specInbox ??= [];
+    for (const m of msg.media) if (s.specInbox.length < MAX_SPEC_FILES) s.specInbox.push(m);
+    if (msg.text) s.specCaption = [s.specCaption, msg.text].filter(Boolean).join('\n');
+    if (s.state.startsWith('checkout') || s.state === 'qty') s.state = 'idle';
+
+    if (this.specBatchMs > 0) {
+      // Первое фото — сразу подтверждаем получение, остальные молча добавляем в пачку.
+      if (!this.specTimers.has(to)) await this.channel.text(to, '📄 Получил, разбираю спецификацию… Если фото несколько — присылайте все, я подожду пару секунд.');
+      clearTimeout(this.specTimers.get(to));
+      this.specTimers.set(
+        to,
+        setTimeout(() => {
+          this.specTimers.delete(to);
+          this.defer(to, () => this.handle({ from: to, specReady: true }));
+        }, this.specBatchMs),
+      );
+      return;
+    }
+    await this.channel.text(to, '📄 Получил, разбираю спецификацию…');
+    return this.processSpec(to, s);
+  }
+
+  async processSpec(to, s) {
+    const inbox = s.specInbox ?? [];
+    const caption = s.specCaption ?? '';
+    s.specInbox = [];
+    s.specCaption = '';
+    if (!inbox.length) return;
+
+    const fallback = async (reason) => {
+      if (reason) this.log.error('Разбор спецификации:', reason);
+      await this.channel.text(
+        to,
+        `Спасибо! Передал спецификацию менеджеру — он посчитает и пришлёт КП в рабочее время (${this.shop.hours}).\nСрочно? Звоните: ${this.shop.phone}`,
+      );
+      await this.notifyManager(`📄 Клиент +${to}${s.profileName ? ` (${s.profileName})` : ''} прислал спецификацию (${inbox.length} файл.)${caption ? `:\n${caption}` : ''}\nАвтоматически разобрать не удалось${reason ? `: ${reason}` : ''}. Посмотрите в чате с клиентом.`);
+    };
+    if (!this.spec) return fallback();
+
+    let files;
+    try {
+      files = await Promise.all(inbox.map((m) => this.loadMedia(m)));
+    } catch (err) {
+      return fallback(`не удалось скачать файл: ${err.message}`);
+    }
+    const unsupported = files.filter((f) => !f.supported);
+    files = files.filter((f) => f.supported);
+    if (!files.length) {
+      return this.channel.text(to, `Этот формат не умею читать (${unsupported.map((f) => f.filename || f.mime).join(', ')}). Пришлите фото, PDF или Excel (.xlsx).`);
+    }
+
+    let extracted;
+    try {
+      extracted = await this.spec.extract(files, caption);
+    } catch (err) {
+      return fallback(err.message);
+    }
+    if (!extracted.positions.length) return fallback('позиции не найдены');
+
+    const positions = await this.findCandidates(extracted.positions);
+    let matches;
+    try {
+      matches = await this.spec.match(positions);
+    } catch (err) {
+      this.log.error('Подбор позиций:', err.message);
+      matches = positions.map(() => ({ productId: null, kind: 'none', comment: '' }));
+    }
+
+    s.cartNotes ??= {};
+    const found = [];
+    const missing = [];
+    positions.forEach((p, i) => {
+      const m = matches[i];
+      const product = m.productId && this.product(m.productId);
+      if (product) {
+        const qty = convertQty(p.qty, p.unit, product.unit);
+        s.cart[product.id] = (s.cart[product.id] || 0) + qty;
+        if (m.kind === 'analog') s.cartNotes[product.id] = `аналог для «${p.name}»${m.comment ? `: ${m.comment}` : ''}`;
+        found.push({ p, product, qty, kind: m.kind });
+      } else {
+        // Позиция без цены: остаётся в заявке, уточняем у поставщиков.
+        const id = `spec-${crypto.createHash('sha1').update(`${p.name}|${p.unit}`).digest('hex').slice(0, 10)}`;
+        this.store.external(id, { id, source: 'spec', title: p.name, sku: p.codes?.[0] || '', unit: p.unit || 'шт', price: 0, inStock: false, params: [] });
+        s.cart[id] = (s.cart[id] || 0) + p.qty;
+        missing.push({ p, comment: m.comment });
+      }
+    });
+
+    const priced = found.filter((f) => f.product.price > 0);
+    const sum = priced.reduce((acc, f) => acc + f.product.price * f.qty, 0);
+    const foundLines = found.map(
+      (f) => `✅ ${f.product.title} — ${f.qty} ${f.product.unit}${f.product.price > 0 ? `, ${this.price(f.product)}` : ', цена по запросу'}${f.kind === 'analog' ? ' (аналог)' : ''}`,
+    );
+    const missingLines = missing.map((m) => `🔎 ${m.p.name} — ${m.p.qty} ${m.p.unit}`);
+    const text =
+      `📋 Разобрал спецификацию: *${positions.length}* поз.\n\n` +
+      (found.length ? `*Есть у нас (${found.length}):*\n${foundLines.join('\n')}\n\n` : '') +
+      (missing.length ? `*Уточним у поставщиков (${missing.length}):*\n${missingLines.join('\n')}\n\n` : '') +
+      (sum > 0 ? `Ориентировочно по найденным: *${formatPrice(sum, this.shop.currency)}* без НДС.\n` : '') +
+      (extracted.note ? `\n⚠️ ${extracted.note}\n` : '') +
+      '\nВсё верно? Нажмите «Получить КП» — пришлём коммерческое предложение' +
+      (missing.length ? ', а остальные позиции дополним после ответа поставщиков.' : '.');
+    await this.buttonsLong(to, text, [
+      { id: 'checkout', title: '📄 Получить КП' },
+      { id: 'cart', title: '📝 Заявка' },
+      { id: 'manager', title: '👤 Менеджер' },
+    ], 'Всё верно? Нажмите «Получить КП».');
+  }
+
+  // Файл из сообщения: из канала (WhatsApp media id) или уже переданный буфер (эмулятор).
+  async loadMedia(m) {
+    const file = m.buffer ? { ...m } : { ...m, ...(await this.channel.download(m)) };
+    file.mime = (file.mime || '').split(';')[0].trim();
+    if (file.mime === XLSX || /\.xlsx$/i.test(file.filename || '')) {
+      file.text = await excelToText(file.buffer);
+      file.supported = true;
+    } else {
+      // Лимиты Claude: изображение до 5 МБ, PDF до 32 МБ
+      const limit = file.mime === 'application/pdf' ? 32 : 5;
+      file.supported = (file.mime.startsWith('image/') || file.mime === 'application/pdf') && file.buffer.length <= limit * 1024 * 1024;
+    }
+    return file;
+  }
+
+  // Кандидаты из каталога (и ekt.kz, если в каталоге пусто) для каждой позиции.
+  async findCandidates(positions) {
+    return Promise.all(
+      positions.map(async (p) => {
+        const seen = new Map();
+        for (const q of [p.query, ...(p.codes || []), p.name]) {
+          if (!q) continue;
+          for (const item of this.catalog.search(q, 6).items) if (!seen.has(item.id)) seen.set(item.id, item);
+          if (seen.size >= 8) break;
+        }
+        if (!seen.size && this.ekt?.enabled) {
+          try {
+            for (const it of await this.ekt.search(p.query, 5)) {
+              const item = this.saveEkt(it);
+              seen.set(item.id, item);
+            }
+          } catch (err) {
+            this.log.error('ekt.kz:', err.message);
+          }
+        }
+        const candidates = [...seen.values()].slice(0, 8).map((c) => ({
+          id: c.id, title: c.title, sku: c.sku, brand: c.brand, price: c.price, unit: c.unit, source: c.source || 'catalog',
+        }));
+        return { ...p, candidates };
+      }),
+    );
   }
 
   // Свободный текст: поиск по каталогу + (если включён) ответ AI-консультанта.

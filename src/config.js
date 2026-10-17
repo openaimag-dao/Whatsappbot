@@ -20,6 +20,8 @@ export const config = {
     apiKey: env.ANTHROPIC_API_KEY || '',
     model: env.ANTHROPIC_MODEL || 'claude-opus-5-5',
   },
+  // Пауза перед разбором спецификации в WhatsApp: ждём, пока клиент пришлёт все фото
+  specBatchMs: Number(env.SPEC_BATCH_MS ?? 6000),
   // Токен для служебных страниц (эмулятор, заявки). Если пусто — эмулятор открыт всем.
   adminToken: env.ADMIN_TOKEN || '',
   simulatorEnabled: env.SIMULATOR_ENABLED !== 'false',

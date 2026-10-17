@@ -7,6 +7,7 @@ import { SimulatorChannel } from './channels/simulator.js';
 import { SalesAssistant } from './ai.js';
 import { SalesBot } from './bot.js';
 import { EktClient } from './ekt.js';
+import { SpecReader } from './spec.js';
 import { extractMessages, isValidSignature } from './webhook.js';
 
 // Сборка приложения: общие каталог/хранилище/AI и по боту на каждый канал.
@@ -21,10 +22,22 @@ export function createApp(config = defaultConfig, deps = {}) {
         : null;
 
   const ekt = deps.ekt !== undefined ? deps.ekt : new EktClient({ ...config.firecrawl, pricing: config.pricing });
-  const common = { store, catalog, assistant, ekt, company: config.company, ...(deps.botOptions ?? {}) };
+  const spec = deps.spec !== undefined ? deps.spec : config.ai.apiKey ? new SpecReader(config.ai) : null;
+  const common = { store, catalog, assistant, ekt, spec, company: config.company, ...(deps.botOptions ?? {}) };
+
+  // Сообщения одного клиента обрабатываем строго по очереди.
+  const queues = new Map();
+  const enqueue = (key, task) => {
+    const prev = queues.get(key) ?? Promise.resolve();
+    const next = prev.then(task);
+    const tail = next.catch((err) => console.error(`Ошибка обработки для ${key}:`, err));
+    queues.set(key, tail);
+    tail.finally(() => queues.get(key) === tail && queues.delete(key));
+    return next;
+  };
 
   const wa = deps.whatsapp ?? new WhatsAppClient(config.whatsapp);
-  const bot = new SalesBot({ ...common, channel: wa, shop: config.shop });
+  const bot = new SalesBot({ ...common, channel: wa, shop: config.shop, specBatchMs: config.specBatchMs ?? 0, defer: enqueue });
 
   // Эмулятор: уведомления «менеджеру» остаются внутри эмулятора, а не уходят в WhatsApp.
   const SIM_MANAGER = 'sim-manager';
@@ -40,17 +53,6 @@ export function createApp(config = defaultConfig, deps = {}) {
     return false;
   };
 
-  // Сообщения одного клиента обрабатываем строго по очереди.
-  const queues = new Map();
-  const enqueue = (key, task) => {
-    const prev = queues.get(key) ?? Promise.resolve();
-    const next = prev.then(task);
-    const tail = next.catch((err) => console.error(`Ошибка обработки для ${key}:`, err));
-    queues.set(key, tail);
-    tail.finally(() => queues.get(key) === tail && queues.delete(key));
-    return next;
-  };
-
   const requireAdmin = (req, res, next) => {
     if (!config.adminToken) return next();
     const token = req.get('x-admin-token') || req.query.token;
@@ -58,7 +60,7 @@ export function createApp(config = defaultConfig, deps = {}) {
   };
 
   const app = express();
-  app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
+  app.use(express.json({ limit: '30mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
   app.get('/', (_req, res) =>
     res.send(`${config.shop.name} WhatsApp bot is running${config.simulatorEnabled ? ' — <a href="/simulator">эмулятор</a>' : ''}`),
@@ -89,7 +91,7 @@ export function createApp(config = defaultConfig, deps = {}) {
   if (config.simulatorEnabled) {
     const page = new URL('../public/simulator.html', import.meta.url).pathname;
     app.get('/simulator', (_req, res) => res.sendFile(page));
-    app.get('/simulator/api/info', (_req, res) => res.json({ shop: config.shop.name, products: catalog.size, ai: Boolean(assistant) }));
+    app.get('/simulator/api/info', (_req, res) => res.json({ shop: config.shop.name, products: catalog.size, ai: Boolean(assistant), spec: Boolean(spec) }));
 
     const simUser = (req) => {
       const id = String(req.body?.user ?? '').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 40);
@@ -102,9 +104,15 @@ export function createApp(config = defaultConfig, deps = {}) {
       if (!user) return res.status(400).json({ error: 'user required' });
       const { text, replyId, name, as } = req.body;
       const from = as === 'manager' ? SIM_MANAGER : user;
+      // Файлы из эмулятора приходят base64 — сразу буфером, без скачивания из канала
+      const media = (Array.isArray(req.body.files) ? req.body.files : []).slice(0, 10).map((f) => ({
+        buffer: Buffer.from(String(f.data || ''), 'base64'),
+        mime: String(f.mime || ''),
+        filename: String(f.name || '').slice(0, 120),
+      }));
       try {
         await enqueue(from, () =>
-          simBot.handle({ from, name: name ? String(name).slice(0, 60) : undefined, text, replyId }),
+          simBot.handle({ from, name: name ? String(name).slice(0, 60) : undefined, text, replyId, ...(media.length ? { media } : {}) }),
         );
       } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -133,5 +141,5 @@ export function createApp(config = defaultConfig, deps = {}) {
     res.json(store.data.orders),
   );
 
-  return { app, bot, simBot, sim, store, catalog, assistant, ekt };
+  return { app, bot, simBot, sim, store, catalog, assistant, ekt, spec };
 }

@@ -78,6 +78,17 @@ export class WhatsAppClient {
     return this.#send(to, { type: 'document', document: { id, filename, ...(caption ? { caption: limitBody(caption) } : {}) } });
   }
 
+  // Скачивание входящего файла (фото/документ спецификации) по media id.
+  async download({ id }) {
+    const base = this.url.replace(/\/[^/]+\/messages$/, '');
+    const meta = await fetch(`${base}/${id}`, { headers: { Authorization: `Bearer ${this.token}` } });
+    if (!meta.ok) throw new Error(`WhatsApp media ${meta.status}: ${await meta.text()}`);
+    const { url, mime_type: mime } = await meta.json();
+    const file = await fetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
+    if (!file.ok) throw new Error(`WhatsApp media download ${file.status}`);
+    return { buffer: Buffer.from(await file.arrayBuffer()), mime };
+  }
+
   markRead(messageId) {
     return this.#post({ messaging_product: 'whatsapp', status: 'read', message_id: messageId }).catch(() => {});
   }
