@@ -4,10 +4,11 @@ const MENU_WORDS = ['меню', 'menu', 'start', 'старт', 'привет', '
 const MAX_HISTORY = 12;
 const PAGE = 9; // 10-я строка списка WhatsApp — «Ещё ▶»
 
-// Логика диалога. Не зависит от HTTP — принимает входящее сообщение и шлёт ответы через wa.
+// Логика диалога. Не зависит от HTTP — принимает входящее сообщение и шлёт ответы через канал (WhatsApp, эмулятор…).
 export class SalesBot {
-  constructor({ wa, store, catalog, shop, assistant = null, logger = console }) {
-    this.wa = wa;
+  constructor({ channel, store, catalog, shop, assistant = null, source = 'whatsapp', logger = console }) {
+    this.channel = channel;
+    this.source = source;
     this.store = store;
     this.catalog = catalog;
     this.shop = shop;
@@ -45,12 +46,12 @@ export class SalesBot {
     if (id === 'manager' || lower === 'менеджер') return this.callManager(from, s);
     if (id === 'search') {
       s.state = 'idle';
-      return this.wa.text(from, '🔎 Напишите название, марку или артикул. Например: «ВВГнг 3х2,5», «СИП-4 4х50», «автомат 25А», «изолятор ШФ-20».');
+      return this.channel.text(from, '🔎 Напишите название, марку или артикул. Например: «ВВГнг 3х2,5», «СИП-4 4х50», «автомат 25А», «изолятор ШФ-20».');
     }
     if (id === 'cart_clear') {
       s.cart = {};
       s.state = 'idle';
-      return this.wa.buttons(from, 'Заявка очищена.', [
+      return this.channel.buttons(from, 'Заявка очищена.', [
         { id: 'catalog', title: 'Каталог' },
         { id: 'menu', title: 'Меню' },
       ]);
@@ -59,7 +60,7 @@ export class SalesBot {
     if (id === 'confirm_order') return this.confirmOrder(from, s);
     if (id === 'cancel_order') {
       s.state = 'idle';
-      return this.wa.buttons(from, 'Отправка отменена. Позиции остались в заявке.', [
+      return this.channel.buttons(from, 'Отправка отменена. Позиции остались в заявке.', [
         { id: 'cart', title: 'Заявка' },
         { id: 'menu', title: 'Меню' },
       ]);
@@ -77,12 +78,12 @@ export class SalesBot {
     if (s.state === 'checkout_name' && text) {
       s.checkout.name = text.slice(0, 150);
       s.state = 'checkout_city';
-      return this.wa.text(from, 'Спасибо! В какой город доставить? (или напишите «самовывоз» — склад в Шымкенте)');
+      return this.channel.text(from, 'Спасибо! В какой город доставить? (или напишите «самовывоз» — склад в Шымкенте)');
     }
     if (s.state === 'checkout_city' && text) {
       s.checkout.city = text.slice(0, 200);
       s.state = 'checkout_comment';
-      return this.wa.buttons(from, 'Есть комментарий к заявке? (БИН для счёта, сроки, нужны сертификаты и т.п.) Напишите его или нажмите «Без комментария».', [
+      return this.channel.buttons(from, 'Есть комментарий к заявке? (БИН для счёта, сроки, нужны сертификаты и т.п.) Напишите его или нажмите «Без комментария».', [
         { id: 'no_comment', title: 'Без комментария' },
       ]);
     }
@@ -100,7 +101,7 @@ export class SalesBot {
     s.state = 'idle';
     const hello = s.profileName ? `Здравствуйте, ${s.profileName}!` : 'Здравствуйте!';
     const count = this.cartItems(s).length;
-    return this.wa.buttons(
+    return this.channel.buttons(
       to,
       `${hello} Это *${this.shop.name}* — электротехника для бизнеса с доставкой по Казахстану.\n\n` +
         `В каталоге ${(Math.floor(this.catalog.size / 100) * 100).toLocaleString('ru-RU')}+ позиций: кабель и провод, СИП, арматура, изоляторы, автоматы, трансформаторы.\n\n` +
@@ -129,7 +130,7 @@ export class SalesBot {
       title: c.title,
       description: `${this.catalog.byCategory(c.id).length} позиций`,
     }));
-    return this.wa.list(to, '📦 Выберите раздел каталога:', 'Разделы', this.#paged(rows, offset, (o) => `cats:${o}`));
+    return this.channel.list(to, '📦 Выберите раздел каталога:', 'Разделы', this.#paged(rows, offset, (o) => `cats:${o}`));
   }
 
   productRow(p) {
@@ -144,9 +145,9 @@ export class SalesBot {
   showProducts(to, s, categoryId, offset) {
     const cat = this.catalog.category(categoryId);
     const items = this.catalog.byCategory(categoryId);
-    if (!cat || !items.length) return this.wa.text(to, 'В этом разделе пока нет товаров.');
+    if (!cat || !items.length) return this.channel.text(to, 'В этом разделе пока нет товаров.');
     const rows = this.#paged(items.map((p) => this.productRow(p)), offset, (o) => `cat:${categoryId}:${o}`);
-    return this.wa.list(
+    return this.channel.list(
       to,
       `*${cat.title}* — ${items.length} позиций.\nСовет: быстрее найти нужное можно поиском — просто напишите марку и сечение.`,
       'Товары',
@@ -156,16 +157,16 @@ export class SalesBot {
 
   showFound(to, s, offset) {
     const items = (s.lastSearch?.ids ?? []).map((id) => this.catalog.products.get(id)).filter(Boolean);
-    if (!items.length) return this.wa.text(to, 'Напишите, что ищете, — я найду в каталоге.');
+    if (!items.length) return this.channel.text(to, 'Напишите, что ищете, — я найду в каталоге.');
     const head = s.lastSearch.exact
       ? `🔎 По запросу «${s.lastSearch.query}» найдено: ${items.length}`
       : `Точного совпадения по «${s.lastSearch.query}» нет. Похожие позиции (${items.length}):`;
-    return this.wa.list(to, head, 'Результаты', this.#paged(items.map((p) => this.productRow(p)), offset, (o) => `found:${o}`));
+    return this.channel.list(to, head, 'Результаты', this.#paged(items.map((p) => this.productRow(p)), offset, (o) => `found:${o}`));
   }
 
   showProduct(to, s, productId) {
     const p = this.catalog.products.get(productId);
-    if (!p) return this.wa.text(to, 'Товар не найден. Напишите «меню».');
+    if (!p) return this.channel.text(to, 'Товар не найден. Напишите «меню».');
     const lines = [
       `*${p.title}*`,
       p.brand ? `Производитель: ${p.brand}` : null,
@@ -177,7 +178,7 @@ export class SalesBot {
       p.unit === 'м' ? 'Режем по метражу. От 100 м — цена ниже, пришлём в КП.' : null,
       p.url ? `\n${p.url}` : null,
     ];
-    return this.wa.buttons(to, lines.filter((l) => l !== null).join('\n'), [
+    return this.channel.buttons(to, lines.filter((l) => l !== null).join('\n'), [
       { id: `add:${p.id}`, title: '➕ В заявку' },
       { id: `cat:${p.category}:0`, title: '⬅️ К разделу' },
       { id: 'cart', title: '📝 Заявка' },
@@ -186,10 +187,10 @@ export class SalesBot {
 
   askQuantity(to, s, productId) {
     const p = this.catalog.products.get(productId);
-    if (!p) return this.wa.text(to, 'Товар не найден.');
+    if (!p) return this.channel.text(to, 'Товар не найден.');
     s.state = 'qty';
     s.pendingProduct = p.id;
-    return this.wa.text(to, `Сколько нужно «${p.title}»? Напишите количество в ${p.unit} (например, ${p.unit === 'м' ? '150' : '10'}).`);
+    return this.channel.text(to, `Сколько нужно «${p.title}»? Напишите количество в ${p.unit} (например, ${p.unit === 'м' ? '150' : '10'}).`);
   }
 
   addToCart(to, s, text) {
@@ -200,12 +201,12 @@ export class SalesBot {
       return this.mainMenu(to, s);
     }
     if (!qty || qty <= 0 || qty > 1e6) {
-      return this.wa.text(to, `Не понял количество 🙂 Напишите число, например «${p.unit === 'м' ? '150' : '10'}».`);
+      return this.channel.text(to, `Не понял количество 🙂 Напишите число, например «${p.unit === 'м' ? '150' : '10'}».`);
     }
     s.cart[p.id] = (s.cart[p.id] || 0) + qty;
     s.state = 'idle';
     s.pendingProduct = null;
-    return this.wa.buttons(
+    return this.channel.buttons(
       to,
       `✅ Добавлено: «${p.title}» — ${s.cart[p.id]} ${p.unit}.\nВ заявке позиций: ${this.cartItems(s).length}. Ориентировочно: ${formatPrice(this.cartTotal(s), this.shop.currency)} без НДС.`,
       [
@@ -242,12 +243,12 @@ export class SalesBot {
   async showCart(to, s) {
     s.state = 'idle';
     if (!this.cartItems(s).length) {
-      return this.wa.buttons(to, 'Заявка пока пуста. Найдите товары в каталоге или напишите, что нужно.', [
+      return this.channel.buttons(to, 'Заявка пока пуста. Найдите товары в каталоге или напишите, что нужно.', [
         { id: 'catalog', title: '📦 Каталог' },
         { id: 'search', title: '🔎 Поиск' },
       ]);
     }
-    await this.wa.buttons(to, `📝 *Заявка на КП:*\n${this.cartText(s)}`, [
+    await this.channel.buttons(to, `📝 *Заявка на КП:*\n${this.cartText(s)}`, [
       { id: 'checkout', title: 'Отправить заявку' },
       { id: 'search', title: '🔎 Добавить ещё' },
       { id: 'cart_clear', title: 'Очистить' },
@@ -258,12 +259,12 @@ export class SalesBot {
     if (!this.cartItems(s).length) return this.showCart(to, s);
     s.checkout = {};
     s.state = 'checkout_name';
-    return this.wa.text(to, '📝 Оформляем заявку на коммерческое предложение.\nКак к вам обращаться? Укажите имя и компанию (ТОО/ИП), если покупаете для организации:');
+    return this.channel.text(to, '📝 Оформляем заявку на коммерческое предложение.\nКак к вам обращаться? Укажите имя и компанию (ТОО/ИП), если покупаете для организации:');
   }
 
   showOrderSummary(to, s) {
     const c = s.checkout;
-    return this.wa.buttons(
+    return this.channel.buttons(
       to,
       `Проверьте заявку:\n\n${this.cartText(s)}\n\n👤 ${c.name}\n📍 ${c.city}\n📞 +${to}${c.comment ? `\n💬 ${c.comment}` : ''}`,
       [
@@ -276,6 +277,7 @@ export class SalesBot {
   async confirmOrder(to, s) {
     if (s.state !== 'checkout_confirm' || !this.cartItems(s).length) return this.mainMenu(to, s);
     const order = this.store.createOrder({
+      source: this.source,
       phone: to,
       name: s.checkout.name,
       city: s.checkout.city,
@@ -296,7 +298,7 @@ export class SalesBot {
     s.cart = {};
     s.checkout = {};
     s.state = 'idle';
-    await this.wa.text(
+    await this.channel.text(
       to,
       `🎉 Заявка *№${order.number}* принята!\nМенеджер проверит наличие и пришлёт коммерческое предложение в рабочее время (${this.shop.hours}).\n\nСрочно? Звоните: ${this.shop.phone}`,
     );
@@ -307,7 +309,7 @@ export class SalesBot {
 
   async callManager(to, s) {
     s.state = 'manager';
-    await this.wa.text(
+    await this.channel.text(
       to,
       `Передал ваш запрос менеджеру 👤 Он ответит в этом чате в рабочее время (${this.shop.hours}).\n` +
         `Можно сразу прислать спецификацию (Excel/PDF) или список позиций.\nТелефон: ${this.shop.phone}\n\nЧтобы вернуться к боту, напишите «меню».`,
@@ -318,7 +320,7 @@ export class SalesBot {
   async notifyManager(text) {
     if (!this.shop.managerPhone) return;
     try {
-      await this.wa.text(this.shop.managerPhone, text);
+      await this.channel.text(this.shop.managerPhone, text);
     } catch (err) {
       this.log.error('Не удалось уведомить менеджера:', err.message);
     }
@@ -337,7 +339,7 @@ export class SalesBot {
       return this.showFound(to, s, 0);
     }
 
-    return this.wa.buttons(
+    return this.channel.buttons(
       to,
       `По запросу «${text.slice(0, 60)}» ничего не нашёл в каталоге 🤔\nМногие позиции поставляем под заказ — менеджер уточнит наличие и цену. Или попробуйте написать иначе (марка, сечение, артикул).`,
       [
@@ -363,7 +365,7 @@ export class SalesBot {
     s.history.push({ role: 'assistant', content: answer });
     // Храним последние сообщения парами, история всегда начинается с реплики клиента.
     if (s.history.length > MAX_HISTORY) s.history = s.history.slice(-MAX_HISTORY);
-    await this.wa.text(to, answer);
+    await this.channel.text(to, answer);
     return true;
   }
 }

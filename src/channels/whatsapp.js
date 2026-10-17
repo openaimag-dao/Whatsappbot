@@ -1,7 +1,6 @@
-// Отправка сообщений через WhatsApp Cloud API.
-// Лимиты Meta: до 3 кнопок (заголовок ≤ 20 симв.), список ≤ 10 строк (заголовок ≤ 24, описание ≤ 72).
+import { limitBody, limitButtonLabel, limitButtons, limitRows, limitText } from './limits.js';
 
-const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+// Отправка сообщений через WhatsApp Cloud API.
 
 export class WhatsAppClient {
   constructor({ token, phoneNumberId, apiVersion }) {
@@ -26,7 +25,7 @@ export class WhatsAppClient {
   }
 
   text(to, body) {
-    return this.#send(to, { type: 'text', text: { body: cut(body, 4096), preview_url: false } });
+    return this.#send(to, { type: 'text', text: { body: limitText(body), preview_url: false } });
   }
 
   // buttons: [{ id, title }]
@@ -35,9 +34,9 @@ export class WhatsAppClient {
       type: 'interactive',
       interactive: {
         type: 'button',
-        body: { text: cut(body, 1024) },
+        body: { text: limitBody(body) },
         action: {
-          buttons: buttons.slice(0, 3).map((b) => ({ type: 'reply', reply: { id: b.id, title: cut(b.title, 20) } })),
+          buttons: limitButtons(buttons).map((reply) => ({ type: 'reply', reply })),
         },
       },
     });
@@ -49,19 +48,10 @@ export class WhatsAppClient {
       type: 'interactive',
       interactive: {
         type: 'list',
-        body: { text: cut(body, 1024) },
+        body: { text: limitBody(body) },
         action: {
-          button: cut(buttonText, 20),
-          sections: [
-            {
-              title: cut(buttonText, 24),
-              rows: rows.slice(0, 10).map((r) => ({
-                id: r.id,
-                title: cut(r.title, 24),
-                ...(r.description ? { description: cut(r.description, 72) } : {}),
-              })),
-            },
-          ],
+          button: limitButtonLabel(buttonText),
+          sections: [{ title: limitButtonLabel(buttonText), rows: limitRows(rows) }],
         },
       },
     });

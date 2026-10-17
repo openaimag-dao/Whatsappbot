@@ -21,6 +21,15 @@ npm start
 
 Требуется Node.js 22+.
 
+## Эмулятор — проверка без номера WhatsApp
+
+После `npm start` откройте **http://localhost:3000/simulator**. Это тот же бот, что будет в WhatsApp:
+кнопки, списки и лимиты такие же. Справа видно, что придёт менеджеру. Сообщения никуда не отправляются,
+заявки из эмулятора помечаются `source: "simulator"`. На сервере задайте `ADMIN_TOKEN` и открывайте
+`/simulator?token=...`.
+
+Устройство бота описано в [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Подключение к WhatsApp
 
 1. Создайте приложение на [developers.facebook.com](https://developers.facebook.com/) → тип **Business** → добавьте продукт **WhatsApp**.
@@ -60,17 +69,20 @@ npm run import
 Заявки и сессии хранятся в `data/db.json`. Список заявок:
 
 ```
-GET https://ваш-домен/orders?token=<WHATSAPP_VERIFY_TOKEN>
+GET https://ваш-домен/orders?token=<ADMIN_TOKEN>
 ```
 
 ## Структура
 
 | Файл | Назначение |
 |---|---|
-| `src/server.js` | HTTP-сервер, вебхук, проверка подписи, очередь сообщений |
+| `src/server.js` | Запуск сервера |
+| `src/app.js` | Маршруты: вебхук WhatsApp, эмулятор, заявки; подпись, дубли, очередь |
 | `src/bot.js` | Диалог: меню, каталог, поиск, заявка на КП |
 | `src/catalog.js` | Загрузка каталога и поиск |
-| `src/whatsapp.js` | Отправка текста, кнопок и списков через Cloud API |
+| `src/channels/whatsapp.js` | Отправка в WhatsApp Cloud API |
+| `src/channels/simulator.js` | Канал эмулятора |
+| `public/simulator.html` | Страница эмулятора |
 | `src/ai.js` | AI-консультант на Claude |
 | `src/store.js` | Хранилище сессий и заявок |
 | `scripts/import-aimag.js` | Импорт каталога с aimag.kz |

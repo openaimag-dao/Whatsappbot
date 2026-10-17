@@ -20,6 +20,9 @@ export const config = {
     apiKey: env.ANTHROPIC_API_KEY || '',
     model: env.ANTHROPIC_MODEL || 'claude-opus-5-5',
   },
+  // Токен для служебных страниц (эмулятор, заявки). Если пусто — эмулятор открыт всем.
+  adminToken: env.ADMIN_TOKEN || '',
+  simulatorEnabled: env.SIMULATOR_ENABLED !== 'false',
   dbPath: env.DB_PATH || new URL('../data/db.json', import.meta.url).pathname,
   shopInfoPath: env.SHOP_INFO_PATH || new URL('../data/shop-info.md', import.meta.url).pathname,
   catalogPath: env.CATALOG_PATH || new URL('../data/catalog.json', import.meta.url).pathname,
