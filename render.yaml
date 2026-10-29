@@ -1,0 +1,67 @@
+services:
+  - type: web
+    name: whatsappbot
+    runtime: node
+    plan: starter            # free засыпает через 15 мин и теряет data/db.json при рестарте
+    region: frankfurt
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DB_PATH
+        value: /var/data/db.json
+      # --- WhatsApp Cloud API ---
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        generateValue: true
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: GRAPH_API_VERSION
+        value: v23.0
+      # --- Магазин ---
+      - key: SHOP_NAME
+        value: AIMAG ELECTRIC
+      - key: CURRENCY
+        value: ₸
+      - key: SHOP_PHONE
+        value: +7 705 615-17-17
+      - key: SHOP_HOURS
+        value: Пн–Пт, 09:00–18:00
+      - key: MANAGER_PHONE
+        sync: false
+      - key: COMPANY_EMAIL
+        value: sales@aimag.kz
+      # --- AI ---
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-opus-5-5
+      - key: SPEC_BATCH_MS
+        value: "6000"
+      # --- Служебное ---
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: SIMULATOR_ENABLED
+        value: "true"
+      - key: STAMP_PATH
+        value: /var/data/stamp_sign.png
+      # --- ekt.kz ---
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: EKT_UNDERCUT
+        value: "0.05"
+      - key: EKT_DISCOUNT
+        value: "0.2"
+      - key: EKT_DISCOUNT_BY_CATEGORY
+        value: "{}"
+      - key: MIN_MARGIN
+        value: "0.1"
