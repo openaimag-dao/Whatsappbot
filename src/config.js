@@ -81,8 +81,10 @@ function buildSellers() {
   if (env.BEREKE_IIK) {
     sellers.bereke = {
       key: 'bereke',
-      brand: env.BEREKE_BRAND || 'BEREKE',
-      tagline: env.BEREKE_TAGLINE || 'Поставка электротехнической продукции и оборудования',
+      // Шапка с логотипом AIMAG ELECTRIC остаётся; название, реквизиты и подпись — Bereke.
+      // BEREKE_BRAND=BEREKE — вместо логотипа AIMAG показать название Bereke.
+      brand: env.BEREKE_BRAND || 'AIMAG',
+      tagline: env.BEREKE_TAGLINE ?? 'Кабельно-проводниковая продукция и электрооборудование',
       name: env.BEREKE_NAME || 'ИП «Bereke»',
       idLabel: 'БИН',
       iin: env.BEREKE_BIN || '050404601141',
