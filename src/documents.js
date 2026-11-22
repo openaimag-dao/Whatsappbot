@@ -7,11 +7,8 @@ const FONT_R = new URL('../assets/fonts/DejaVuSans.ttf', import.meta.url).pathna
 const FONT_B = new URL('../assets/fonts/DejaVuSans-Bold.ttf', import.meta.url).pathname;
 
 const NAVY = '#1f3a8a';
-const GOLD = '#e0a100';
 const INK = '#1d2433';
-const MUTED = '#6b7384';
 const LINE = '#dfe3ec';
-const SOFT = '#f3f5fa';
 const OK = ['#e3f4e8', '#1d7a3a'];
 const ORDER = ['#fff2d6', '#9a6500'];
 
@@ -101,133 +98,172 @@ function stamp(doc, company, x, y, width = 150) {
   }
 }
 
-// Коммерческое предложение.
-// kp: { number, date, validUntil, buyer: { name, bin?, address? }, lines: [{ title, qty, unit, priceVat, status: 'stock'|'order', leadTime? }], pending?: [названия позиций, которые уточняются] }
+// Коммерческое предложение — фирменный стиль AIMAG ELECTRIC (эталон КП-261017-03, шаблон в Google Drive).
+// Тёмная шапка #121D2B с янтарной полосой #FFB300, реквизиты в две колонки, плашка «Кому», янтарная плашка «Итого».
+// Для Bereke шапка AIMAG ELECTRIC остаётся, а название, реквизиты, подпись и печать — Bereke.
+// kp: { number, date, validUntil, buyer: { name, bin?, address?, phone? }, lines: [{ title, qty, unit, priceVat, status: 'stock'|'order', leadTime? }], pending?: [...] }
+const K = { dark: '#121D2B', amber: '#FFB300', zebra: '#F6F8FA', to: '#FFF8E6', line: '#E3E8EE', grey: '#4A5B6E', foot: '#8A96A5', head: '#D6DDE6' };
+const FONT_I = {
+  R: new URL('../assets/fonts/Inter-Regular.ttf', import.meta.url).pathname,
+  S: new URL('../assets/fonts/Inter-SemiBold.ttf', import.meta.url).pathname,
+  B: new URL('../assets/fonts/Inter-Bold.ttf', import.meta.url).pathname,
+  I: new URL('../assets/fonts/Inter-Italic.ttf', import.meta.url).pathname,
+};
+const shortDate = (d) => `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+const plainName = (n) => String(n || '').replace(/[«»"]/g, '');
+
 export async function renderKP(kp, company) {
   const { doc, done } = newDoc();
+  for (const [k, f] of Object.entries(FONT_I)) doc.registerFont(`I${k}`, f);
   const L = 40;
   const W = 515;
-
-  doc.rect(0, 0, 595.28, 16).fill(NAVY);
-
-  // Шапка
-  // Логотип: фирменный AIMAG или название продавца (КП от Bereke не должно содержать ничего от AIMAG)
-  const brand = company.brand ?? 'AIMAG';
-  if (brand === 'AIMAG') {
-    doc.font('B').fontSize(24).fillColor(NAVY).text('AIM', L, 38, { continued: true }).fillColor(GOLD).text('A', { continued: true }).fillColor(NAVY).text('G');
-  } else {
-    doc.font('B').fontSize(24).fillColor(NAVY).text(brand, L, 38, { width: 270, lineBreak: false });
-  }
-  if (company.tagline !== '') doc.font('R').fontSize(7.5).fillColor(MUTED).text(company.tagline ?? 'Кабельно-проводниковая продукция и электрооборудование', L, 68);
-  doc.font('R').fontSize(7.5).fillColor('#3a4252').text(
-    [`${company.name} · ${idLabel(company)} ${company.iin}`, company.address, [company.phone, company.email].filter(Boolean).join(' · '), company.site].filter(Boolean).join('\n'),
-    L + 280, 40, { width: W - 280, align: 'right', lineGap: 1.5 },
-  );
-
-  doc.font('B').fontSize(16).fillColor(INK).text(`Коммерческое предложение № ${kp.number}`, L, 100);
-  doc.font('R').fontSize(8.5).fillColor(MUTED).text(`от ${longDate(kp.date)} · действительно до ${longDate(kp.validUntil)}`, L, 122);
-
-  // Стороны
-  const py = 142;
-  const half = (W - 10) / 2;
-  const buyer = [kp.buyer.bin ? `БИН/ИИН ${kp.buyer.bin}` : null, kp.buyer.address, kp.buyer.phone].filter(Boolean).join('\n');
-  const seller = `${idLabel(company)} ${company.iin} · плательщик НДС\n${company.bank}, БИК ${company.bik}\nИИК ${company.iik}`;
-  doc.font('R').fontSize(8.5);
-  const ph = Math.max(doc.heightOfString(buyer, { width: half - 20 }), doc.heightOfString(seller, { width: half - 20 })) + 40;
-  for (const [i, [label, name, body]] of [['ЗАКАЗЧИК', kp.buyer.name, buyer], ['ПОСТАВЩИК', company.name, seller]].entries()) {
-    const bx = L + i * (half + 10);
-    doc.rect(bx, py, half, ph).fill(SOFT);
-    doc.font('R').fontSize(6.5).fillColor(MUTED).text(label, bx + 10, py + 9, { characterSpacing: 1 });
-    doc.font('B').fontSize(9).fillColor(INK).text(name, bx + 10, py + 20, { width: half - 20 });
-    doc.font('R').fontSize(8.5).text(body, bx + 10, doc.y + 2, { width: half - 20, lineGap: 1.5 });
-  }
-
-  // Позиции
-  const rows = kp.lines.map((l, i) => [
-    String(i + 1),
-    l.title,
-    qty(l.qty),
-    l.unit,
-    money(l.priceVat),
-    money(round2(l.qty * l.priceVat)),
-    l.status === 'stock' ? { text: 'в наличии', pill: OK } : { text: `под заказ${l.leadTime ? `, ${l.leadTime}` : ''}`, pill: ORDER },
-  ]);
-  let y = table(
-    doc,
-    L,
-    py + ph + 14,
-    [
-      { title: '№', width: 22, align: 'center' },
-      { title: 'Наименование', width: 160 },
-      { title: 'Кол-во', width: 50, align: 'right' },
-      { title: 'Ед.', width: 28, align: 'center' },
-      { title: 'Цена с НДС, ₸', width: 85, align: 'right' },
-      { title: 'Сумма с НДС, ₸', width: 85, align: 'right' },
-      { title: 'Наличие', width: 85, align: 'center' },
-    ],
-    rows,
-  );
-
-  // Итоги
-  const t = totals(kp.lines);
-  if (y + 120 > PAGE_BOTTOM) {
+  const seller = plainName(company.name);
+  let page = 1;
+  const footer = () => {
+    // Нижнее поле страницы 40pt — снимаем его на время футера, иначе pdfkit начнёт новую страницу.
+    const bottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    doc.font('IR').fontSize(7).fillColor(K.foot).text(`AIMAG ELECTRIC · www.aimag.kz · ${company.phone} · стр. ${page}`, L, 812, { width: W, align: 'center', lineBreak: false });
+    doc.page.margins.bottom = bottom;
+  };
+  const newPage = () => {
+    footer();
     doc.addPage();
-    y = 40;
-  }
+    page += 1;
+    return 40;
+  };
+
+  // Шапка AIMAG ELECTRIC
+  doc.roundedRect(L, 34, W, 60, 5).fill(K.dark);
+  doc.rect(L, 91, W, 3).fill(K.amber);
+  doc.roundedRect(L + 14, 46, 32, 32, 6).fill(K.amber);
+  doc.font('IB').fontSize(21).fillColor(K.dark).text('A', L + 14, 50.5, { width: 32, align: 'center' });
+  doc.font('IB').fontSize(20).fillColor('#fff').text('AIMAG', L + 56, 45);
+  doc.font('IS').fontSize(9).fillColor(K.amber).text('ELECTRIC', L + 57, 68, { characterSpacing: 3 });
+  doc.font('IR').fontSize(8).fillColor(K.head).text(
+    `Электротехника для промышленных проектов\nг. Шымкент · доставка по всему Казахстану\n${company.phone} · www.aimag.kz`,
+    L + 250, 46, { width: W - 264, align: 'right', lineGap: 1.6 },
+  );
+
+  // Реквизиты продавца в две колонки
+  let y = 104;
+  doc.font('IB').fontSize(8).fillColor(K.dark).text(seller, L, y, { continued: true })
+    .font('IR').fillColor(K.grey).text(` · ${idLabel(company)} ${company.iin} · плательщик НДС`);
+  if (company.director) doc.font('IR').fontSize(8).fillColor(K.grey).text(`Руководитель: ${company.director}`, L, doc.y + 1.5);
+  const leftBottom = doc.y;
+  doc.font('IR').fontSize(8).fillColor(K.grey).text(`${company.bank} · БИК ${company.bik}\nИИК ${company.iik}`, L + 260, y, { width: W - 260, align: 'right', lineGap: 1.5 });
+  y = Math.max(leftBottom, doc.y) + 12;
+
+  doc.font('IB').fontSize(19).fillColor(K.dark).text('Коммерческое предложение', L, y);
+  doc.font('IR').fontSize(9.5).fillColor(K.grey).text(`№ ${kp.number} от ${shortDate(kp.date)} · действительно до ${shortDate(kp.validUntil)}`, L, doc.y + 1);
+  y = doc.y + 9;
+
+  // Плашка «Кому»
+  const buyer = [kp.buyer.name, kp.buyer.bin ? `БИН ${kp.buyer.bin}` : null, kp.buyer.address].filter(Boolean).join(', ');
+  const intro = `${seller} предлагает поставку электротехнической продукции по вашей заявке.`;
+  doc.font('IR').fontSize(9);
+  const toH = doc.heightOfString(`Кому: ${buyer}`, { width: W - 24 }) + doc.heightOfString(intro, { width: W - 24 }) + 14;
+  doc.rect(L, y, W, toH).fill(K.to);
+  doc.rect(L, y, 3, toH).fill(K.amber);
+  doc.font('IB').fontSize(9).fillColor(K.dark).text('Кому: ', L + 12, y + 7, { continued: true, width: W - 24 }).font('IR').text(buyer);
+  doc.font('IR').fontSize(9).text(intro, L + 12, doc.y + 1, { width: W - 24 });
+  y += toH + 10;
+
+  // Таблица позиций
+  const cols = [
+    { title: '№', width: 22, align: 'center' },
+    { title: 'Наименование', width: 185 },
+    { title: 'Ед.', width: 30, align: 'center' },
+    { title: 'Кол-во', width: 48, align: 'right' },
+    { title: 'Цена с НДС, ₸', width: 78, align: 'right' },
+    { title: 'Сумма с НДС, ₸', width: 82, align: 'right' },
+    { title: 'Наличие', width: 70, align: 'center' },
+  ];
+  const padX = 5;
+  const head = () => {
+    doc.font('IS').fontSize(8);
+    const h = 20;
+    doc.rect(L, y, W, h).fill(K.dark);
+    let cx = L;
+    for (const c of cols) {
+      doc.fillColor('#fff').text(c.title, cx + padX, y + 6, { width: c.width - padX * 2, align: c.align || 'left', lineBreak: false });
+      cx += c.width;
+    }
+    y += h;
+  };
+  head();
+  kp.lines.forEach((l, i) => {
+    const cells = [String(i + 1), l.title, l.unit, qty(l.qty), money(l.priceVat), money(round2(l.qty * l.priceVat))];
+    doc.font('IR').fontSize(8);
+    const h = Math.max(...cells.map((c, j) => doc.heightOfString(c, { width: cols[j].width - padX * 2 }))) + 9;
+    if (y + h > PAGE_BOTTOM) {
+      y = newPage();
+      head();
+    }
+    if (i % 2 === 1) doc.rect(L, y, W, h).fill(K.zebra);
+    let cx = L;
+    cells.forEach((c, j) => {
+      doc.font('IR').fontSize(8).fillColor(K.dark).text(c, cx + padX, y + 4.5, { width: cols[j].width - padX * 2, align: cols[j].align || 'left' });
+      cx += cols[j].width;
+    });
+    const stock = l.status === 'stock';
+    const label = stock ? 'в наличии' : `под заказ${l.leadTime ? `, ${l.leadTime}` : ''}`;
+    const [bg, fg] = stock ? OK : ORDER;
+    doc.font('IS').fontSize(6.8);
+    const pw = cols[6].width - 6;
+    const ph = doc.heightOfString(label, { width: pw - 6 }) + 4;
+    doc.roundedRect(cx + 3, y + (h - ph) / 2, pw, ph, 3).fill(bg);
+    doc.fillColor(fg).text(label, cx + 6, y + (h - ph) / 2 + 2, { width: pw - 6, align: 'center' });
+    doc.moveTo(L, y + h).lineTo(L + W, y + h).lineWidth(0.6).stroke(K.line);
+    y += h;
+  });
+
+  // Итого
+  const t = totals(kp.lines);
+  if (y + 90 > PAGE_BOTTOM) y = newPage();
   y += 8;
-  const tx = L + 300;
-  for (const [label, value] of [['Сумма без НДС', money(t.net)], [`НДС ${Math.round(VAT_RATE * 100)}%`, money(t.vat)]]) {
-    doc.font('R').fontSize(9).fillColor(INK).text(label, tx, y).text(value, tx, y, { width: W - 300, align: 'right' });
-    y += 15;
-  }
-  doc.moveTo(tx, y).lineTo(L + W, y).lineWidth(1.5).stroke(NAVY);
-  y += 6;
-  doc.font('B').fontSize(12).fillColor(NAVY).text('Итого с НДС', tx, y).text(`${money(t.total)} ₸`, tx, y, { width: W - 300, align: 'right' });
-  y += 22;
-  doc.font('R').fontSize(8.5).fillColor('#3a4252').text(`${amountInWords(t.total)}, в т.ч. НДС ${Math.round(VAT_RATE * 100)}%`, L, y, { width: W });
+  const bw = 230;
+  doc.rect(L + W - bw, y, bw, 22).fill(K.amber);
+  doc.font('IB').fontSize(10.5).fillColor(K.dark).text('Итого с НДС:', L + W - bw + 10, y + 5.5).text(`${money(t.total)} ₸`, L + W - bw + 10, y + 5.5, { width: bw - 20, align: 'right' });
+  y += 28;
+  doc.font('IR').fontSize(8.5).fillColor(K.dark).text(`Сумма без НДС: ${money(t.net)} · в том числе НДС ${Math.round(VAT_RATE * 100)}%: ${money(t.vat)}`, L, y, { width: W, align: 'right' });
   y = doc.y + 6;
+  doc.font('II').fontSize(8.5).fillColor(K.grey).text(`Сумма прописью: ${amountInWords(t.total)}, в т.ч. НДС ${Math.round(VAT_RATE * 100)}%.`, L, y, { width: W });
+  y = doc.y + 8;
 
   if (kp.pending?.length) {
-    doc.font('B').fontSize(8.5).fillColor(ORDER[1]).text('Уточняем у поставщиков и дополним предложение:', L, y, { width: W });
-    doc.font('R').fillColor(INK).text(kp.pending.map((p) => `• ${p}`).join('\n'), L, doc.y + 2, { width: W });
-    y = doc.y + 6;
+    doc.font('IS').fontSize(8.5).fillColor(ORDER[1]).text('Уточняем у поставщиков и дополним предложение:', L, y, { width: W });
+    doc.font('IR').fillColor(K.dark).text(kp.pending.map((p) => `• ${p}`).join('\n'), L, doc.y + 2, { width: W });
+    y = doc.y + 8;
   }
 
-  // Условия
+  // Условия поставки
   const terms = [
-    ['Срок действия', '7 календарных дней с даты КП'],
-    ['Оплата', '100% предоплата за позиции под заказ; для наличия — по счёту'],
-    ['Доставка', 'По Казахстану 1–3 дня после оплаты, склад — г. Шымкент'],
-    ['Документы', 'Счёт на оплату, накладная, ЭСФ, сертификаты'],
+    `Цены в тенге с учётом НДС ${Math.round(VAT_RATE * 100)}%. Предложение действительно 7 календарных дней.`,
+    'Оплата: 100% предоплата за позиции под заказ; позиции в наличии — по счёту.',
+    'Срок поставки: со склада в Шымкенте — 1–3 рабочих дня по Казахстану; позиции под заказ — срок подтверждается при оплате.',
+    'Документы: счёт на оплату, накладная, ЭСФ, сертификаты соответствия.',
   ];
-  const tw = W / 4;
-  doc.font('R').fontSize(8);
-  const th = Math.max(...terms.map(([, v]) => doc.heightOfString(v, { width: tw - 14 }))) + 30;
-  if (y + th + 130 > PAGE_BOTTOM) {
-    doc.addPage();
-    y = 40;
+  doc.font('IR').fontSize(8.5);
+  const termsH = terms.reduce((sum, x) => sum + doc.heightOfString(`•  ${x}`, { width: W - 10 }) + 2, 0) + 20;
+  if (y + termsH + 110 > PAGE_BOTTOM) y = newPage();
+  doc.font('IB').fontSize(10.5).fillColor(K.dark).text('Условия поставки', L, y);
+  y = doc.y + 3;
+  for (const x of terms) {
+    doc.font('IR').fontSize(8.5).fillColor(K.dark).text(`•  ${x}`, L + 4, y, { width: W - 10, lineGap: 1 });
+    y = doc.y + 2;
   }
-  terms.forEach(([k, v], i) => {
-    const bx = L + i * tw;
-    doc.rect(bx, y, tw, th).lineWidth(0.7).stroke(LINE);
-    doc.font('B').fontSize(8.5).fillColor(NAVY).text(k, bx + 7, y + 8, { width: tw - 14 });
-    doc.font('R').fontSize(8).fillColor(INK).text(v, bx + 7, y + 21, { width: tw - 14 });
-  });
-  y += th + 14;
+  y += 16;
 
-  // Подпись
-  doc.font('R').fontSize(9.5).fillColor(INK).text('Руководитель', L, y + 48);
-  doc.moveTo(L + 110, y + 60).lineTo(L + 280, y + 60).lineWidth(0.8).stroke(INK);
-  stamp(doc, company, L + 110, y - 12, 140);
-  doc.text(company.director, L + 295, y + 48);
-  y += 125;
+  // Подпись и печать
+  const role = `Руководитель ${seller}`;
+  doc.font('IR').fontSize(9.5).fillColor(K.dark).text(role, L, y + 40);
+  const lx = L + doc.widthOfString(role) + 14;
+  doc.moveTo(lx, y + 52).lineTo(L + 360, y + 52).lineWidth(0.8).stroke(K.dark);
+  if (company.director) doc.text(company.director, L + 372, y + 40);
+  stamp(doc, company, lx + 10, y - 4, 125);
 
-  doc.moveTo(L, y).lineTo(L + W, y).lineWidth(0.6).stroke(LINE);
-  doc.fontSize(7).fillColor(MUTED).text(
-    `Цены указаны в тенге с учётом НДС ${Math.round(VAT_RATE * 100)}%. Наличие позиций «под заказ» подтверждается в момент оплаты. Для оформления счёта нажмите «Согласен» в WhatsApp.`,
-    L, y + 5, { width: W },
-  );
-
+  footer();
   doc.end();
   return done;
 }
