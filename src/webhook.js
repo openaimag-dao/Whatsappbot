@@ -24,6 +24,11 @@ export function extractMessages(body) {
           msg.replyId = m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id;
         } else if (m.type === 'button') {
           msg.text = m.button?.text;
+        } else if (m.type === 'image' || m.type === 'document') {
+          // Фото или файл спецификации: скачивается позже по media id
+          const media = m[m.type] ?? {};
+          msg.media = [{ id: media.id, mime: media.mime_type, filename: media.filename ?? '' }];
+          if (media.caption) msg.text = media.caption;
         }
         result.push(msg);
       }

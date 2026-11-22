@@ -11,13 +11,13 @@ const shop = { name: 'Тест', currency: '₸', phone: '+7 700 000-00-00', hou
 
 function setup(assistant = null) {
   const sent = [];
-  const wa = {
+  const channel = {
     text: async (to, body) => sent.push({ to, type: 'text', body }),
     buttons: async (to, body, buttons) => sent.push({ to, type: 'buttons', body, buttons }),
     list: async (to, body, button, rows) => sent.push({ to, type: 'list', body, rows }),
   };
   const store = new Store(null);
-  const bot = new SalesBot({ wa, store, catalog, shop, assistant, logger: { error() {} } });
+  const bot = new SalesBot({ channel, store, catalog, shop, assistant, logger: { error() {} } });
   return { bot, store, sent, say: (m) => bot.handle({ from: PHONE, ...m }) };
 }
 
