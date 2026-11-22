@@ -93,6 +93,8 @@ function table(doc, x, y, cols, rows, { border = false, headFill = NAVY, headCol
   return y;
 }
 
+const idLabel = (company) => company.idLabel || 'ИИН';
+
 function stamp(doc, company, x, y, width = 150) {
   if (company.stampPath && fs.existsSync(company.stampPath)) {
     doc.image(company.stampPath, x, y, { width });
@@ -109,10 +111,16 @@ export async function renderKP(kp, company) {
   doc.rect(0, 0, 595.28, 16).fill(NAVY);
 
   // Шапка
-  doc.font('B').fontSize(24).fillColor(NAVY).text('AIM', L, 38, { continued: true }).fillColor(GOLD).text('A', { continued: true }).fillColor(NAVY).text('G');
-  doc.font('R').fontSize(7.5).fillColor(MUTED).text('Кабельно-проводниковая продукция и электрооборудование', L, 68);
-  doc.fontSize(7.5).fillColor('#3a4252').text(
-    [`${company.name} · ИИН ${company.iin}`, company.address, [company.phone, company.email].filter(Boolean).join(' · '), company.site].filter(Boolean).join('\n'),
+  // Логотип: фирменный AIMAG или название продавца (КП от Bereke не должно содержать ничего от AIMAG)
+  const brand = company.brand ?? 'AIMAG';
+  if (brand === 'AIMAG') {
+    doc.font('B').fontSize(24).fillColor(NAVY).text('AIM', L, 38, { continued: true }).fillColor(GOLD).text('A', { continued: true }).fillColor(NAVY).text('G');
+  } else {
+    doc.font('B').fontSize(24).fillColor(NAVY).text(brand, L, 38, { width: 270, lineBreak: false });
+  }
+  if (company.tagline !== '') doc.font('R').fontSize(7.5).fillColor(MUTED).text(company.tagline ?? 'Кабельно-проводниковая продукция и электрооборудование', L, 68);
+  doc.font('R').fontSize(7.5).fillColor('#3a4252').text(
+    [`${company.name} · ${idLabel(company)} ${company.iin}`, company.address, [company.phone, company.email].filter(Boolean).join(' · '), company.site].filter(Boolean).join('\n'),
     L + 280, 40, { width: W - 280, align: 'right', lineGap: 1.5 },
   );
 
@@ -123,7 +131,7 @@ export async function renderKP(kp, company) {
   const py = 142;
   const half = (W - 10) / 2;
   const buyer = [kp.buyer.bin ? `БИН/ИИН ${kp.buyer.bin}` : null, kp.buyer.address, kp.buyer.phone].filter(Boolean).join('\n');
-  const seller = `ИИН ${company.iin} · плательщик НДС\n${company.bank}, БИК ${company.bik}\nИИК ${company.iik}`;
+  const seller = `${idLabel(company)} ${company.iin} · плательщик НДС\n${company.bank}, БИК ${company.bik}\nИИК ${company.iik}`;
   doc.font('R').fontSize(8.5);
   const ph = Math.max(doc.heightOfString(buyer, { width: half - 20 }), doc.heightOfString(seller, { width: half - 20 })) + 40;
   for (const [i, [label, name, body]] of [['ЗАКАЗЧИК', kp.buyer.name, buyer], ['ПОСТАВЩИК', company.name, seller]].entries()) {
@@ -247,7 +255,7 @@ export async function renderInvoice(inv, company) {
   doc.moveTo(c[1], gy).lineTo(c[1], gy + rh * 2).stroke();
   doc.moveTo(c[2], gy).lineTo(c[2], gy + rh * 2).stroke();
   const cell = (text, x, y, w, opts = {}) => doc.font(opts.bold ? 'B' : 'R').fontSize(opts.size || 8.5).fillColor(INK).text(text, x + 5, y + 5, { width: w - 10, align: opts.align || 'left' });
-  cell(`Бенефициар:\n${company.name}\nИИН: ${company.iin}`, c[0], gy, c[1] - c[0]);
+  cell(`Бенефициар:\n${company.name}\n${idLabel(company)}: ${company.iin}`, c[0], gy, c[1] - c[0]);
   cell('ИИК', c[1], gy, c[2] - c[1], { bold: true, align: 'center' });
   cell(company.iik, c[1], gy + 20, c[2] - c[1], { bold: true, align: 'center' });
   cell('КБе', c[2], gy, c[3] - c[2], { bold: true, align: 'center' });
@@ -267,7 +275,7 @@ export async function renderInvoice(inv, company) {
     doc.font('B').fontSize(9).text(text, L + 85, y, { width: W - 85 });
     y = doc.y + 8;
   };
-  party('Поставщик:', `ИИН ${company.iin}, ${company.name}, ${company.address}, тел.: ${company.phone}`);
+  party('Поставщик:', [`${idLabel(company)} ${company.iin}`, company.name, company.address, `тел.: ${company.phone}`].filter(Boolean).join(', '));
   party('Покупатель:', inv.buyer.text);
   party('Договор:', inv.contract || '—');
 

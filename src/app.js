@@ -23,7 +23,7 @@ export function createApp(config = defaultConfig, deps = {}) {
 
   const ekt = deps.ekt !== undefined ? deps.ekt : new EktClient({ ...config.firecrawl, pricing: config.pricing });
   const spec = deps.spec !== undefined ? deps.spec : config.ai.apiKey ? new SpecReader(config.ai) : null;
-  const common = { store, catalog, assistant, ekt, spec, company: config.company, ...(deps.botOptions ?? {}) };
+  const common = { store, catalog, assistant, ekt, spec, company: config.company, sellers: config.sellers, pricing: config.pricing, priceMemoryDays: config.priceMemoryDays, ...(deps.botOptions ?? {}) };
 
   // Сообщения одного клиента обрабатываем строго по очереди.
   const queues = new Map();

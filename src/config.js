@@ -1,4 +1,6 @@
 const env = process.env;
+// Телефон во всех документах один — номер Ерлана.
+const PHONE = '+7 (705) 615-1717';
 
 export const config = {
   port: Number(env.PORT || 3000),
@@ -25,22 +27,12 @@ export const config = {
   // Токен для служебных страниц (эмулятор, заявки). Если пусто — эмулятор открыт всем.
   adminToken: env.ADMIN_TOKEN || '',
   simulatorEnabled: env.SIMULATOR_ENABLED !== 'false',
-  // Реквизиты продавца для КП и счёта
-  company: {
-    name: env.COMPANY_NAME || 'ИП «AIMAG»',
-    iin: env.COMPANY_IIN || '890922301639',
-    director: env.COMPANY_DIRECTOR || 'Оразбаев Е. О.',
-    address: env.COMPANY_ADDRESS || 'Республика Казахстан, г. Шымкент, Байтерекова, 202',
-    phone: env.COMPANY_PHONE || '+7 (705) 615-1717',
-    email: env.COMPANY_EMAIL || '',
-    site: env.COMPANY_SITE || 'aimag.kz',
-    bank: env.COMPANY_BANK || 'АО «Банк ЦентрКредит»',
-    bik: env.COMPANY_BIK || 'KCJBKZKX',
-    iik: env.COMPANY_IIK || 'KZ248562204135637519',
-    kbe: env.COMPANY_KBE || '',
-    knp: env.COMPANY_KNP || '710',
-    stampPath: env.STAMP_PATH || new URL('../templates/assets/stamp_sign.png', import.meta.url).pathname,
-  },
+  // Продавцы, от имени которых бот выставляет КП и счёт. Менеджер переключает продавца заявки командой
+  // «береке 1023» / «аймаг 1023». Bereke включается, когда в .env заданы её банковские реквизиты.
+  sellers: buildSellers(),
+  defaultSeller: env.DEFAULT_SELLER || 'aimag',
+  // Цена, уже отправленная клиенту в КП, повторяется в следующих КП на эту позицию N дней
+  priceMemoryDays: Number(env.PRICE_MEMORY_DAYS ?? 30),
   pricing: {
     // Цена клиенту = цена ekt.kz × (1 − EKT_UNDERCUT)
     ektUndercut: Number(env.EKT_UNDERCUT ?? 0.05),
@@ -59,3 +51,53 @@ export const config = {
   shopInfoPath: env.SHOP_INFO_PATH || new URL('../data/shop-info.md', import.meta.url).pathname,
   catalogPath: env.CATALOG_PATH || new URL('../data/catalog.json', import.meta.url).pathname,
 };
+
+// Продавец по умолчанию (для совместимости: раньше реквизиты были в config.company)
+config.company = config.sellers[config.defaultSeller] ?? config.sellers.aimag;
+
+function buildSellers() {
+  const sellers = {
+    aimag: {
+      key: 'aimag',
+      brand: 'AIMAG',
+      tagline: 'Кабельно-проводниковая продукция и электрооборудование',
+      name: env.COMPANY_NAME || 'ИП «AIMAG»',
+      idLabel: 'ИИН',
+      iin: env.COMPANY_IIN || '890922301639',
+      director: env.COMPANY_DIRECTOR || 'Оразбаев Е. О.',
+      address: env.COMPANY_ADDRESS || 'Республика Казахстан, г. Шымкент, Байтерекова, 202',
+      phone: env.COMPANY_PHONE || PHONE,
+      email: env.COMPANY_EMAIL || '',
+      site: env.COMPANY_SITE || 'aimag.kz',
+      bank: env.COMPANY_BANK || 'АО «Банк ЦентрКредит»',
+      bik: env.COMPANY_BIK || 'KCJBKZKX',
+      iik: env.COMPANY_IIK || 'KZ248562204135637519',
+      kbe: env.COMPANY_KBE || '',
+      knp: env.COMPANY_KNP || '710',
+      stampPath: env.STAMP_PATH || new URL('../templates/assets/stamp_sign.png', import.meta.url).pathname,
+    },
+  };
+  // Bereke: без реквизитов AIMAG, своя печать и факсимиле руководителя. Банк и подпись — только из .env.
+  if (env.BEREKE_IIK) {
+    sellers.bereke = {
+      key: 'bereke',
+      brand: env.BEREKE_BRAND || 'BEREKE',
+      tagline: env.BEREKE_TAGLINE || 'Поставка электротехнической продукции и оборудования',
+      name: env.BEREKE_NAME || 'ИП «Bereke»',
+      idLabel: 'БИН',
+      iin: env.BEREKE_BIN || '050404601141',
+      director: env.BEREKE_DIRECTOR || '',
+      address: env.BEREKE_ADDRESS || '',
+      phone: PHONE,
+      email: env.BEREKE_EMAIL || '',
+      site: '',
+      bank: env.BEREKE_BANK || '',
+      bik: env.BEREKE_BIK || '',
+      iik: env.BEREKE_IIK,
+      kbe: env.BEREKE_KBE || '',
+      knp: env.BEREKE_KNP || '710',
+      stampPath: env.BEREKE_STAMP_PATH || new URL('../templates/assets/stamp_bereke.png', import.meta.url).pathname,
+    };
+  }
+  return sellers;
+}

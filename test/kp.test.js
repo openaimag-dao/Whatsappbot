@@ -39,7 +39,7 @@ test('ekt.kz: разбор поиска, подбор и цена −5%', () => 
   assert.equal(priceFromEkt(found[0], { ...pricing, ektDiscount: 0.1 }).needsApproval, true);
 });
 
-function setup({ discount = 0.2 } = {}) {
+function setup({ discount = 0.2, sellers = null, store: givenStore = null, now = '2026-10-17T10:00:00' } = {}) {
   const sent = [];
   const channel = {
     text: async (to, body) => sent.push({ to, type: 'text', body }),
@@ -54,9 +54,9 @@ function setup({ discount = 0.2 } = {}) {
         .filter((i) => i.price > 0)
         .map((i) => ({ ...i, quote: priceFromEkt(i, { ...pricing, ektDiscount: discount }) })),
   };
-  const store = new Store(null);
+  const store = givenStore ?? new Store(null);
   const company = { ...config.company, stampPath: '' };
-  const bot = new SalesBot({ channel, store, catalog, shop, ekt, company, now: () => new Date('2026-10-17T10:00:00'), logger: { error() {} } });
+  const bot = new SalesBot({ channel, store, catalog, shop, ekt, company, sellers, pricing, now: () => new Date(now), logger: { error() {} } });
   return { store, sent, say: (m, from = PHONE) => bot.handle({ from, ...m }) };
 }
 
@@ -113,4 +113,67 @@ test('низкая прибыль: КП только после «ок <номе
   await say({ text: `ок ${order.number}` }, shop.managerPhone);
   assert.equal(order.status, 'kp_sent');
   assert.ok(sent.some((m) => m.type === 'document' && m.to === PHONE));
+});
+
+const BEREKE = { key: 'bereke', brand: 'BEREKE', tagline: '', name: 'ИП «Bereke»', idLabel: 'БИН', iin: '050404601141', director: 'Тест', address: 'Шымкент', phone: '+7 (705) 615-1717', bank: 'Банк', bik: 'BIK', iik: 'KZ00', knp: '710', stampPath: '' };
+
+test('«береке <номер>»: КП перевыставляется от Bereke, счёт тоже от Bereke', async () => {
+  const sellers = { aimag: { ...config.company, stampPath: '' }, bereke: BEREKE };
+  const { store, sent, say } = setup({ sellers });
+  await orderFromEkt(say, sent);
+  const order = store.data.orders[0];
+  assert.equal(order.seller, 'aimag');
+
+  await say({ text: `береке ${order.number}` }, shop.managerPhone);
+  assert.equal(order.seller, 'bereke');
+  assert.equal(order.kp.seller, 'bereke');
+  assert.equal(order.kp.number, 'КП-1017-02');
+  assert.match(sent.findLast((m) => m.to === shop.managerPhone && m.type === 'text').body, /перевыставлено от ИП «Bereke»/);
+  const kpPdf = sent.findLast((m) => m.type === 'document' && m.to === PHONE).pdf;
+  assert.equal(kpPdf.subarray(0, 4).toString(), '%PDF');
+
+  const offer = sent.findLast((m) => m.to === PHONE && m.type === 'buttons');
+  await say({ replyId: offer.buttons[0].id });
+  await say({ text: 'БИН 060340007296, ТОО «Тест», г. Актобе' });
+  assert.equal(order.status, 'invoice_sent');
+  await say({ text: `аймаг ${order.number}` }, shop.managerPhone);
+  assert.equal(order.seller, 'bereke', 'после счёта продавец не меняется');
+});
+
+test('Bereke не настроена — понятный ответ менеджеру', async () => {
+  const { store, sent, say } = setup();
+  await orderFromEkt(say, sent);
+  await say({ text: `береке ${store.data.orders[0].number}` }, shop.managerPhone);
+  assert.match(sent.at(-1).body, /не заданы/);
+});
+
+test('память цен: вторая заявка получает цену из прошлого КП и пересчёт прибыли', async () => {
+  const store = new Store(null);
+  const first = setup({ store });
+  await orderFromEkt(first.say, first.sent);
+  const key = SalesBot.priceKey(store.data.orders[0].items[0]);
+  assert.equal(store.quoted(key).priceVat, 1277);
+  assert.equal(store.quoted(key).kp, 'КП-1017-01');
+
+  // Цену в прошлом КП дали ниже — новая заявка должна получить её же, а прибыль пересчитаться.
+  store.quoted(key, { ...store.quoted(key), priceVat: 1150 });
+  const second = setup({ store, now: '2026-10-20T10:00:00' });
+  await orderFromEkt((m, from = '77019998877') => second.say(m, from), second.sent);
+  const order = store.data.orders[1];
+  assert.equal(order.items[0].priceVat, 1150);
+  assert.equal(order.items[0].priceFromKp.kp, 'КП-1017-01');
+  assert.equal(order.items[0].quote.margin, 0.07); // 1150 / (1344 × 0.8) − 1
+  assert.equal(order.status, 'awaiting_approval', 'прибыль ниже минимума — на подтверждение');
+  assert.match(second.sent.findLast((m) => m.to === shop.managerPhone).body, /Цены из прошлых КП[\s\S]*КП-1017-01/);
+});
+
+test('память цен: старше PRICE_MEMORY_DAYS не используется', async () => {
+  const store = new Store(null);
+  const first = setup({ store });
+  await orderFromEkt(first.say, first.sent);
+  const key = SalesBot.priceKey(store.data.orders[0].items[0]);
+  store.quoted(key, { ...store.quoted(key), priceVat: 1150 });
+  const later = setup({ store, now: '2026-12-01T10:00:00' });
+  await orderFromEkt((m, from = '77019998877') => later.say(m, from), later.sent);
+  assert.equal(store.data.orders[1].items[0].priceVat, 1277);
 });

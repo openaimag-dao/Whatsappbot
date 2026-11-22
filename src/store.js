@@ -46,6 +46,14 @@ export class Store {
     return this.data.external[id];
   }
 
+  // Память цен из отправленных КП: quoted(key) → { priceVat, kp, date, title }; quoted(key, entry) — записать.
+  quoted(key, entry) {
+    if (!key) return undefined;
+    this.data.quotedPrices ??= {};
+    if (entry) this.data.quotedPrices[key] = entry;
+    return this.data.quotedPrices[key];
+  }
+
   save() {
     if (!this.filePath) return;
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });

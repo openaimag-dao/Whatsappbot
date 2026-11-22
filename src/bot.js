@@ -13,7 +13,8 @@ const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 // Логика диалога. Не зависит от HTTP — принимает входящее сообщение и шлёт ответы через канал (WhatsApp, эмулятор…).
 export class SalesBot {
   constructor({
-    channel, store, catalog, shop, assistant = null, ekt = null, company = null, docs = { renderKP, renderInvoice },
+    channel, store, catalog, shop, assistant = null, ekt = null, company = null, sellers = null, pricing = {}, priceMemoryDays = 30,
+    docs = { renderKP, renderInvoice },
     spec = null, specBatchMs = 0, defer = (_key, fn) => fn(), source = 'whatsapp', now = () => new Date(), logger = console,
   }) {
     this.channel = channel;
@@ -25,6 +26,10 @@ export class SalesBot {
     this.source = source;
     this.ekt = ekt;
     this.company = company;
+    // Продавцы по ключу (aimag, bereke). Продавец по умолчанию — company.
+    this.sellers = sellers ?? (company ? { [company.key || 'aimag']: company } : {});
+    this.minMargin = pricing.minMargin ?? 0.1;
+    this.priceMemoryDays = priceMemoryDays;
     this.docs = docs;
     this.now = now;
     this.store = store;
@@ -69,6 +74,9 @@ export class SalesBot {
     if (from === this.shop.managerPhone) {
       const m = lower.match(/^(?:ок|ok|да|отправ\S*)\s*№?\s*(\d{3,})/);
       if (m) return this.approveOrder(from, Number(m[1]));
+      // Выставить заявку от другого продавца: «береке 1023», «аймаг 1023»
+      const sm = lower.match(/^(береке|bereke|аймаг|aimag)\s*№?\s*(\d{3,})/);
+      if (sm) return this.setSeller(from, Number(sm[2]), /^(береке|bereke)$/.test(sm[1]) ? 'bereke' : 'aimag');
     }
 
     // Клиент общается с менеджером — бот молчит, пока не попросят меню.
@@ -327,7 +335,8 @@ export class SalesBot {
       name: s.checkout.name,
       city: s.checkout.city,
       comment: s.checkout.comment,
-      items: this.cartItems(s).map((i) => ({
+      seller: this.company?.key || 'aimag',
+      items: this.applyQuoted(this.cartItems(s).map((i) => ({
         id: i.product.id,
         sku: i.product.sku,
         title: i.product.title,
@@ -340,7 +349,7 @@ export class SalesBot {
         url: i.product.url,
         ...(i.product.quote ? { quote: i.product.quote } : {}),
         ...(s.cartNotes?.[i.product.id] ? { note: s.cartNotes[i.product.id] } : {}),
-      })),
+      }))),
       total: this.cartTotal(s),
       status: 'new',
     });
@@ -349,7 +358,7 @@ export class SalesBot {
     s.cartNotes = {};
     s.checkout = {};
     s.state = 'idle';
-    const contact = `👤 ${order.name}\n📍 ${order.city}\n📞 +${to}${order.comment ? `\n💬 ${order.comment}` : ''}`;
+    const contact = `👤 ${order.name}\n📍 ${order.city}\n📞 +${to}${order.comment ? `\n💬 ${order.comment}` : ''}` + this.quotedNote(order);
     const priced = order.items.filter((i) => i.priceVat > 0);
     const risky = order.items.filter((i) => i.quote?.needsApproval);
 
@@ -409,10 +418,11 @@ export class SalesBot {
         lines,
         pending,
       },
-      this.company,
+      this.sellerFor(order),
     );
     const { total } = totals(lines);
-    order.kp = { number, date: date.toISOString(), total };
+    order.kp = { number, date: date.toISOString(), total, seller: this.sellerFor(order).key || 'aimag' };
+    this.rememberPrices(order, number, date);
     order.status = 'kp_sent';
     const file = `${number}.pdf`;
     await this.channel.document(order.phone, pdf, file, `Коммерческое предложение ${number} по заявке №${order.number}`);
@@ -426,7 +436,71 @@ export class SalesBot {
         { id: 'manager', title: '👤 Менеджер' },
       ],
     );
-    await this.notifyManagerDoc(pdf, file, `${number} → +${order.phone} (заявка №${order.number})`);
+    await this.notifyManagerDoc(pdf, file, `${number} от ${this.sellerFor(order).name} → +${order.phone} (заявка №${order.number})`);
+  }
+
+  // Продавец заявки (AIMAG или Bereke). Неизвестный или не настроенный — продавец по умолчанию.
+  sellerFor(order) {
+    return this.sellers[order.seller] || this.company;
+  }
+
+  async setSeller(to, number, key) {
+    const order = this.store.order(number);
+    if (!order) return this.channel.text(to, `Заявка №${number} не найдена.`);
+    const seller = this.sellers[key];
+    if (!seller) return this.channel.text(to, `Реквизиты ${key === 'bereke' ? 'Bereke' : 'AIMAG'} не заданы на сервере (см. BEREKE_* в .env).`);
+    if (order.invoice) return this.channel.text(to, `По заявке №${number} уже выставлен счёт ${order.invoice.number} — продавца не меняю.`);
+    order.seller = key;
+    if (order.status === 'kp_sent') {
+      await this.sendKP(order);
+      return this.channel.text(to, `✅ КП по заявке №${number} перевыставлено от ${seller.name} и отправлено клиенту.`);
+    }
+    return this.channel.text(to, `✅ Заявка №${number} будет выставлена от ${seller.name}.` + (order.status === 'awaiting_approval' ? ` Для отправки КП ответьте «ок ${number}».` : ''));
+  }
+
+  // Ключ позиции для памяти цен: артикул, иначе нормализованное название.
+  static priceKey(item) {
+    if (item.sku) return `sku:${String(item.sku).trim().toLowerCase()}`;
+    const t = String(item.title || '').toLowerCase().replace(/ё/g, 'е').replace(/[×х*]/g, 'x').replace(/,/g, '.').replace(/[\s"«»()]+/g, ' ').trim();
+    return t ? `t:${t}` : '';
+  }
+
+  // Цена, которая уже уходила клиентам в КП, повторяется: одна позиция — одна цена во всех КП.
+  applyQuoted(items) {
+    const maxAge = this.priceMemoryDays * 24 * 3600 * 1000;
+    const now = this.now().getTime();
+    for (const item of items) {
+      const mem = this.store.quoted(SalesBot.priceKey(item));
+      if (!mem || !(mem.priceVat > 0) || now - new Date(mem.date).getTime() > maxAge) continue;
+      if (mem.priceVat === item.priceVat) continue;
+      item.priceFromKp = { kp: mem.kp, current: item.priceVat || 0 };
+      item.priceVat = mem.priceVat;
+      item.price = round2(mem.priceVat / (1 + VAT_RATE));
+      // Для позиций ekt.kz закупка известна — пересчитываем прибыль по старой цене.
+      if (item.quote?.costVat > 0) {
+        const margin = round2(mem.priceVat / item.quote.costVat - 1);
+        item.quote = { ...item.quote, priceVat: mem.priceVat, price: item.price, margin, needsApproval: margin < this.minMargin };
+      }
+    }
+    return items;
+  }
+
+  quotedNote(order) {
+    const used = order.items.filter((i) => i.priceFromKp);
+    if (!used.length) return '';
+    const rows = used.map((i) => {
+      const cur = i.priceFromKp.current;
+      const diff = cur > 0 ? ` (сейчас ${money(cur)} ₸, ${cur > i.priceVat ? '+' : ''}${Math.round((cur / i.priceVat - 1) * 100)}%)` : ' (сейчас без цены)';
+      return `• ${i.title}: ${money(i.priceVat)} ₸ из ${i.priceFromKp.kp}${diff}`;
+    });
+    return `\n\n💾 Цены из прошлых КП:\n${rows.join('\n')}`;
+  }
+
+  rememberPrices(order, kp, date) {
+    for (const i of order.items) {
+      const key = SalesBot.priceKey(i);
+      if (key && i.priceVat > 0) this.store.quoted(key, { priceVat: i.priceVat, kp, date: date.toISOString(), title: i.title });
+    }
   }
 
   async approveOrder(to, number) {
@@ -464,7 +538,7 @@ export class SalesBot {
     const { mmdd, nn } = this.store.next('invoice', date);
     const number = `${mmdd}-${nn}`;
     const lines = this.docLines(order);
-    const pdf = await this.docs.renderInvoice({ number, date, buyer, lines }, this.company);
+    const pdf = await this.docs.renderInvoice({ number, date, buyer, lines }, this.sellerFor(order));
     const { total } = totals(lines);
     order.buyer = buyer;
     order.invoice = { number, date: date.toISOString(), total };

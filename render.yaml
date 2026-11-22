@@ -54,6 +54,25 @@ services:
         value: "true"
       - key: STAMP_PATH
         value: /var/data/stamp_sign.png
+      # --- Продавцы и память цен ---
+      - key: DEFAULT_SELLER
+        value: aimag
+      - key: PRICE_MEMORY_DAYS
+        value: "30"
+      - key: BEREKE_NAME
+        sync: false
+      - key: BEREKE_DIRECTOR
+        sync: false
+      - key: BEREKE_ADDRESS
+        sync: false
+      - key: BEREKE_BANK
+        sync: false
+      - key: BEREKE_BIK
+        sync: false
+      - key: BEREKE_IIK
+        sync: false
+      - key: BEREKE_STAMP_PATH
+        value: /var/data/stamp_bereke.png
       # --- ekt.kz ---
       - key: FIRECRAWL_API_KEY
         sync: false
