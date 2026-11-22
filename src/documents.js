@@ -268,7 +268,7 @@ export async function renderKP(kp, company) {
   return done;
 }
 
-// Счёт на оплату — по образцу счёта AIMAG.
+// Счёт на оплату — стандартная форма 1С «Счет на оплату покупателю» (как у AIMAG из 1С), одинаковая для всех продавцов.
 // inv: { number, date, buyer: { text }, contract?, lines: [{ title, code?, qty, unit, priceVat }] }
 export async function renderInvoice(inv, company) {
   const { doc, done } = newDoc();
@@ -276,7 +276,7 @@ export async function renderInvoice(inv, company) {
   const W = 515;
 
   doc.font('B').fontSize(8).fillColor(INK).text(
-    'Внимание! При оплате укажите номер и дату счета. Уведомление об оплате направьте поставщику.\nНаличие товара и условия отгрузки согласовываются с поставщиком.',
+    'Внимание! Оплата данного счета означает согласие с условиями поставки товара. Уведомление об оплате обязательно, в противном случае не гарантируется наличие товара на складе. Товар отпускается по факту прихода денег на р/с Поставщика, самовывозом, при наличии доверенности и документов удостоверяющих личность.',
     L, 40, { width: W, align: 'center' },
   );
 
@@ -291,7 +291,7 @@ export async function renderInvoice(inv, company) {
   doc.moveTo(c[1], gy).lineTo(c[1], gy + rh * 2).stroke();
   doc.moveTo(c[2], gy).lineTo(c[2], gy + rh * 2).stroke();
   const cell = (text, x, y, w, opts = {}) => doc.font(opts.bold ? 'B' : 'R').fontSize(opts.size || 8.5).fillColor(INK).text(text, x + 5, y + 5, { width: w - 10, align: opts.align || 'left' });
-  cell(`Бенефициар:\n${company.name}\n${idLabel(company)}: ${company.iin}`, c[0], gy, c[1] - c[0]);
+  cell(`Бенефициар:\n${company.name}\nБИН: ${company.iin}`, c[0], gy, c[1] - c[0]);
   cell('ИИК', c[1], gy, c[2] - c[1], { bold: true, align: 'center' });
   cell(company.iik, c[1], gy + 20, c[2] - c[1], { bold: true, align: 'center' });
   cell('КБе', c[2], gy, c[3] - c[2], { bold: true, align: 'center' });
@@ -311,24 +311,23 @@ export async function renderInvoice(inv, company) {
     doc.font('B').fontSize(9).text(text, L + 85, y, { width: W - 85 });
     y = doc.y + 8;
   };
-  party('Поставщик:', [`${idLabel(company)} ${company.iin}`, company.name, company.address, `тел.: ${company.phone}`].filter(Boolean).join(', '));
+  party('Поставщик:', `БИН / ИИН ${company.iin}, ${company.name}`);
   party('Покупатель:', inv.buyer.text);
-  party('Договор:', inv.contract || '—');
+  party('Договор:', inv.contract || 'Без договора');
 
   y = table(
     doc,
     L,
     y + 4,
     [
-      { title: '№', width: 24 },
-      { title: 'Код', width: 40 },
-      { title: 'Наименование', width: 190 },
-      { title: 'Кол-во', width: 64 },
-      { title: 'Ед.', width: 32 },
+      { title: '№', width: 26 },
+      { title: 'Наименование', width: 233 },
+      { title: 'Кол-во', width: 62 },
+      { title: 'Ед.', width: 34 },
       { title: 'Цена', width: 70 },
-      { title: 'Сумма', width: 95 },
+      { title: 'Сумма', width: 90 },
     ],
-    inv.lines.map((l, i) => [String(i + 1), l.code || '—', l.title, qty(l.qty), l.unit, money(l.priceVat), money(round2(l.qty * l.priceVat))]),
+    inv.lines.map((l, i) => [String(i + 1), l.code ? `${l.title} (${l.code})` : l.title, qty(l.qty), l.unit, money(l.priceVat), money(round2(l.qty * l.priceVat))]),
     { border: true, headFill: null, size: 8.5 },
   );
 
@@ -341,7 +340,7 @@ export async function renderInvoice(inv, company) {
   doc.font('B').fontSize(10.5).fillColor(INK);
   doc.text('Итого:', L + 250, y, { width: 135, align: 'right' }).text(money(t.total), L + 395, y, { width: 120, align: 'right' });
   y += 17;
-  doc.text(`В том числе НДС ${Math.round(VAT_RATE * 100)}%:`, L + 150, y, { width: 235, align: 'right' }).text(money(t.vat), L + 395, y, { width: 120, align: 'right' });
+  doc.text('В том числе НДС:', L + 150, y, { width: 235, align: 'right' }).text(money(t.vat), L + 395, y, { width: 120, align: 'right' });
   y += 28;
   doc.font('R').fontSize(9).text(`Всего наименований ${inv.lines.length}, на сумму ${money(t.total)} KZT`, L, y);
   y += 18;
@@ -350,10 +349,10 @@ export async function renderInvoice(inv, company) {
   doc.moveTo(L, y).lineTo(L + W, y).lineWidth(1.2).stroke(INK);
   y += 6;
 
-  doc.font('B').fontSize(9.5).text('Руководитель', L, y + 34);
+  doc.font('B').fontSize(9.5).text('Исполнитель', L, y + 34);
   doc.moveTo(L + 100, y + 46).lineTo(L + 310, y + 46).lineWidth(0.8).stroke(INK);
   stamp(doc, company, L + 115, y - 14, 150);
-  doc.font('R').text(company.director, L + 325, y + 34);
+  doc.font('R').text(`/${company.director}/`, L + 325, y + 34);
   doc.fontSize(8.5).text('М.П.', L + 300, y + 110);
 
   doc.end();
